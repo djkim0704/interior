@@ -207,13 +207,9 @@ response = client.models.generate_content(...)
 
 ## 8. 테스트
 
-`pytest`는 `requirements.txt`에 없으므로 따로 설치해야 한다.
-
 ```bash
-venv\Scripts\python.exe -m pip install pytest      # Windows
-venv/bin/python -m pip install pytest              # macOS / Linux
-
-venv\Scripts\python.exe -m pytest tests/ -q
+venv\Scripts\python.exe -m pytest tests/ -q     # Windows
+venv/bin/python -m pytest tests/ -q             # macOS / Linux
 ```
 
 `tests/test_product_recommendation.py`는 `MockProvider`를 써서 SerpApi를
