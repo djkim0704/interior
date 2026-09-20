@@ -7,6 +7,7 @@ import io
 import os
 import re
 import shutil
+import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
@@ -17,6 +18,7 @@ from google.genai import types
 import requests
 from PIL import Image
 
+from .gemini_retry import call_with_retry
 from .gemini_svg_experiment import _extract_svg, generate_svg_text
 from .product_icon_svg import generate_product_icon_svg
 from .topdown_experiment.run import analyze_room
@@ -1122,6 +1124,23 @@ def _file_digest(path: Path) -> str:
     return digest.hexdigest()
 
 
+# 생성 결과 캐시 유효 시간(초). 30분이 지난 결과는 버리고 다시 만든다.
+FLOORPLAN_CACHE_TTL_SECONDS = 1800
+
+
+def _is_cache_fresh(path: Path) -> bool:
+    """캐시 파일이 존재하고 TTL 안쪽이면 True.
+
+    shutil.copy2가 mtime을 보존하므로, 같은 사진을 다른 이름으로 올려
+    캐시를 복사해 와도 원본이 만들어진 시각을 기준으로 만료된다.
+    """
+    try:
+        age = time.time() - path.stat().st_mtime
+    except OSError:
+        return False
+    return age < FLOORPLAN_CACHE_TTL_SECONDS
+
+
 def _reuse_identical_upload_cache(
     image_path: Path,
     output_dir: Path,
@@ -1132,7 +1151,7 @@ def _reuse_identical_upload_cache(
     raw_path: Path,
 ) -> bool:
     """파일명이 달라도 내용이 같은 업로드면 기존 Gemini 결과를 복사한다."""
-    if scene_path.exists() and svg_path.exists():
+    if _is_cache_fresh(scene_path) and _is_cache_fresh(svg_path):
         return True
     source_digest = _file_digest(image_path)
     for candidate in image_path.parent.iterdir():
@@ -1146,7 +1165,10 @@ def _reuse_identical_upload_cache(
             continue
         candidate_scene = output_dir / f"{candidate.stem}_model2_scene.json"
         candidate_svg = output_dir / f"{candidate.stem}_model2_floorplan.svg"
-        if not (candidate_scene.exists() and candidate_svg.exists()):
+        if not (
+            _is_cache_fresh(candidate_scene)
+            and _is_cache_fresh(candidate_svg)
+        ):
             continue
         shutil.copy2(candidate_scene, scene_path)
         shutil.copy2(candidate_svg, svg_path)
@@ -1366,9 +1388,27 @@ def generate_floorplan_for_web(
     image_path = Path(image_path)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    model = analysis_model or os.getenv(
+    base_model = analysis_model or os.getenv(
         "GEMINI_ANALYSIS_MODEL",
         DEFAULT_ANALYSIS_MODEL,
+    )
+    # 두 단계는 모델에 요구하는 바가 다르다.
+    #  - 배치 분석: 구조화된 JSON. normalize_layout이 빠진 필드를 메워줘서
+    #    가벼운 모델로도 버틴다. 무료 등급 RPD가 큰 lite 계열이 유리하다.
+    #  - SVG 생성: layout id와 정확히 일치하는 <g id="...">를 붙여야 해서
+    #    (prepare_floorplan_edit_markup / _remove_object_and_label이 이 id로
+    #    가구를 찾는다) 지시 준수력이 좋은 모델이 필요하다.
+    # .env에서 따로 지정할 수 있고, 없으면 기존처럼 한 모델을 공유한다.
+    # 호출자가 analysis_model을 명시하면 그 값을 그대로 존중한다.
+    layout_model = (
+        analysis_model
+        or os.getenv("GEMINI_LAYOUT_MODEL", "").strip()
+        or base_model
+    )
+    svg_model = (
+        analysis_model
+        or os.getenv("GEMINI_SVG_MODEL", "").strip()
+        or base_model
     )
     stem = image_path.stem
     scene_path = output_dir / f"{stem}_model2_scene.json"
@@ -1393,10 +1433,17 @@ def generate_floorplan_for_web(
         )
 
     client = _client()
-    if skip_existing and scene_path.exists():
+    scene_reused = skip_existing and _is_cache_fresh(scene_path)
+    if scene_reused:
         scene = json.loads(scene_path.read_text(encoding="utf-8"))
     else:
-        scene = analyze_room(client, image_path, model)
+        scene = call_with_retry(
+            analyze_room,
+            client,
+            image_path,
+            layout_model,
+            description="방 배치 분석",
+        )
         scene_path.write_text(
             json.dumps(scene, ensure_ascii=False, indent=2),
             encoding="utf-8",
@@ -1417,12 +1464,16 @@ def generate_floorplan_for_web(
         encoding="utf-8",
     )
 
-    if not (skip_existing and svg_path.exists()):
-        svg_text, raw_text = generate_svg_text(
+    # scene을 새로 뽑았으면 SVG도 반드시 다시 만든다. 새 layout의 객체 id와
+    # 옛 SVG의 <g id="...">가 어긋나면 수정·삭제 기능이 조용히 죽는다.
+    if not (scene_reused and _is_cache_fresh(svg_path)):
+        svg_text, raw_text = call_with_retry(
+            generate_svg_text,
             client,
             image_path,
             scene,
-            model=model,
+            model=svg_model,
+            description="평면도 SVG 생성",
         )
         svg_path.write_text(svg_text, encoding="utf-8")
         base_svg_path.write_text(
@@ -1468,6 +1519,9 @@ def generate_floorplan_for_web(
         "svg_markup": svg_markup,
         "objects": furniture_objects,
         "provider": "model2_gemini_svg",
+        # 어느 모델이 만든 결과인지 남긴다. 503/품질 문제를 추적할 때 필요하다.
+        "layout_model": layout_model,
+        "svg_model": svg_model,
     }
 
 

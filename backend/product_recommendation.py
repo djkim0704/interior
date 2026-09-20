@@ -11,6 +11,7 @@ import random
 import re
 import time
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Protocol
@@ -134,6 +135,42 @@ class ClipImageSimilarityService:
             return None
 
 
+class _SerpApiError(ValueError):
+    """SerpApi가 돌려준 오류.
+
+    retryable=False면 같은 요청을 다시 보내도 결과가 같다. "결과 없음"이나
+    "검색 한도 소진" 같은 확정 응답이 여기 해당하며, 이걸 재시도하면
+    질의 하나에 30초 넘게 매달려 상품 페이지 전체가 멈춘다.
+    """
+
+    def __init__(self, message: str, *, retryable: bool) -> None:
+        super().__init__(message)
+        self.retryable = retryable
+
+
+def _env_float(name: str, fallback: float) -> float:
+    """.env 값을 실수로 읽는다. 비었거나 이상하면 fallback."""
+    try:
+        value = float(os.getenv(name, "").strip())
+    except (TypeError, ValueError):
+        return fallback
+    return value if value > 0 else fallback
+
+
+def _env_int(name: str, fallback: int) -> int:
+    """.env 값을 정수로 읽는다. 비었거나 이상하면 fallback."""
+    try:
+        value = int(os.getenv(name, "").strip())
+    except (TypeError, ValueError):
+        return fallback
+    return value if value >= 0 else fallback
+
+
+def _redact_key(message: str, api_key: str) -> str:
+    """예외 메시지에 URL이 섞여 api_key가 로그로 새는 것을 막는다."""
+    return message.replace(api_key, "***") if api_key else message
+
+
 class SerpApiShoppingProvider:
     """SerpApi Google Shopping 후보를 기존 내부 상품 형식으로 변환한다."""
 
@@ -143,9 +180,16 @@ class SerpApiShoppingProvider:
         self,
         api_key: str | None = None,
         *,
-        timeout: float = 10.0,
-        retries: int = 0,
+        timeout: float | None = None,
+        retries: int | None = None,
     ) -> None:
+        # Google Shopping 검색은 캐시되지 않은 질의에서 10초를 넘기는 일이
+        # 잦다. 상품 1종마다 질의를 여러 번 돌리므로 10초/재시도 0회에서는
+        # 일부 질의가 매번 타임아웃으로 버려졌다.
+        if timeout is None:
+            timeout = _env_float("SERPAPI_TIMEOUT", 30.0)
+        if retries is None:
+            retries = _env_int("SERPAPI_RETRIES", 2)
         self.api_key = (
             api_key
             or os.getenv("SERPAPI_API", "")
@@ -160,8 +204,62 @@ class SerpApiShoppingProvider:
         self.location = os.getenv("SERPAPI_LOCATION", "").strip()
         self.timeout = timeout
         self.retries = max(0, min(int(retries), 2))
+        # prefetch()가 채워 두는 질의별 결과. 인스턴스는 요청마다 새로
+        # 만들어지므로 요청 하나를 넘어 살아남지 않는다.
+        self._prefetched: dict[tuple[str, int], list[dict[str, Any]]] = {}
+
+    def prefetch(
+        self,
+        queries: list[str],
+        *,
+        display: int = DISPLAY_PER_QUERY,
+    ) -> None:
+        """여러 질의를 동시에 미리 받아 둔다.
+
+        SerpApi 한 번은 중앙값 12초짜리 네트워크 대기라, 가구 종류마다
+        순차로 부르면 종류 13개에 2분 30초가 넘는다. 결과를 미리 채워
+        두면 뒤따르는 search()가 즉시 반환하므로, 추천 로직의 호출 순서와
+        누적 상태(shown_product_ids 등)는 그대로 둔 채 대기 시간만 줄인다.
+
+        실패한 질의는 저장하지 않는다. 그 질의는 나중에 search()가 평소처럼
+        직접 호출하므로 결과가 달라지지 않는다.
+        """
+        targets = [
+            query
+            for query in dict.fromkeys(queries)
+            if query and (query, display) not in self._prefetched
+        ]
+        if not targets:
+            return
+        workers = max(1, min(_env_int("SERPAPI_MAX_WORKERS", 8), len(targets)))
+
+        def fetch(query: str) -> tuple[str, list[dict[str, Any]] | None]:
+            try:
+                return query, self._search_uncached(query, display)
+            except Exception as exc:
+                LOGGER.warning(
+                    "prefetch_failed query=%r error=%s", query, exc
+                )
+                return query, None
+
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            # 결과 저장은 메인 스레드에서만 일어나므로 별도 잠금이 필요 없다.
+            for query, found in pool.map(fetch, targets):
+                if found is not None:
+                    self._prefetched[(query, display)] = found
 
     def search(
+        self,
+        query: str,
+        display: int = DISPLAY_PER_QUERY,
+    ) -> list[dict[str, Any]]:
+        """미리 받아둔 결과가 있으면 그걸 쓰고, 없으면 직접 조회한다."""
+        found = self._prefetched.pop((query, display), None)
+        if found is not None:
+            return found
+        return self._search_uncached(query, display)
+
+    def _search_uncached(
         self,
         query: str,
         display: int = DISPLAY_PER_QUERY,
@@ -209,15 +307,29 @@ class SerpApiShoppingProvider:
                         response.status_code,
                         error_message,
                     )
-                    raise ValueError(
+                    raise _SerpApiError(
                         "SerpApi 요청 실패 "
-                        f"({response.status_code}): {error_message}"
+                        f"({response.status_code}): {error_message}",
+                        # 429(속도 제한)와 5xx는 잠시 뒤 풀릴 수 있다.
+                        # 그 외 4xx는 키나 파라미터 문제라 재시도해도 같다.
+                        retryable=(
+                            response.status_code == 429
+                            or 500 <= response.status_code < 600
+                        ),
                     )
                 payload = response.json()
                 if not isinstance(payload, dict):
-                    raise ValueError("SerpApi 응답 형식이 올바르지 않습니다.")
+                    raise _SerpApiError(
+                        "SerpApi 응답 형식이 올바르지 않습니다.",
+                        retryable=True,
+                    )
                 if payload.get("error"):
-                    raise ValueError(str(payload["error"]))
+                    # "Google hasn't returned any results", "run out of
+                    # searches", "Invalid API key" 등. 모두 확정 응답이다.
+                    raise _SerpApiError(
+                        str(payload["error"]),
+                        retryable=False,
+                    )
                 products = [
                     {
                         "productId": str(item.get("product_id") or ""),
@@ -254,10 +366,22 @@ class SerpApiShoppingProvider:
                 return products[: max(1, min(int(display), 100))]
             except (requests.RequestException, ValueError) as exc:
                 last_error = (
-                    RuntimeError("SerpApi 네트워크 요청에 실패했습니다.")
+                    RuntimeError(
+                        "SerpApi 네트워크 요청에 실패했습니다 "
+                        f"({type(exc).__name__}: "
+                        f"{_redact_key(str(exc), self.api_key)})."
+                    )
                     if isinstance(exc, requests.RequestException)
                     else exc
                 )
+                # 네트워크 오류는 항상 일시적으로 본다. SerpApi가 돌려준
+                # 오류는 _SerpApiError.retryable이 판단한다.
+                retryable = (
+                    isinstance(exc, requests.RequestException)
+                    or getattr(exc, "retryable", True)
+                )
+                if not retryable:
+                    break
                 if attempt < self.retries:
                     time.sleep(0.25 * (attempt + 1))
         assert last_error is not None

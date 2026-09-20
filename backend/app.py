@@ -63,6 +63,11 @@ from model2 import (
     as model2_floorplan
 )
 from model2 import floorplan_3d
+from model2 import gemini_room_svg_render
+from model2.gemini_retry import (
+    GeminiBusyError,
+    api_status_code,
+)
 
 from mood_pipeline import rule_based_svg
 
@@ -1534,6 +1539,63 @@ def loading():
     )
 
 
+def carry_floorplan_to_result() -> str | None:
+    """/floorplan 결과를 /result 가 읽는 자리로 그대로 넘긴다.
+
+    [임시] 평소에는 POST /generate-design 이 선택 상품을 반영해
+    modified_floorplan_file 을 만든다. 그 단계를 건너뛰는 동안에는 사용자가
+    /floorplan 에서 편집한 SVG(없으면 생성 원본)를 그대로 결과 평면도로 쓴다.
+    파일을 새로 만들지 않고 세션 키만 이어 붙이므로 Gemini 호출이 없다.
+    """
+    filename = str(
+        session.get("edited_floorplan_file")
+        or session.get("original_floorplan_file")
+        or ""
+    ).strip()
+    if not filename:
+        return None
+
+    # 편집본은 업로드한 사진이 바뀌면 무효다. /floorplan 이 쓰는 판정과 맞춘다.
+    if (
+        session.get("edited_floorplan_file")
+        and str(session.get("edited_floorplan_upload") or "")
+        != str(session.get("uploaded_file") or "")
+    ):
+        filename = str(
+            session.get("original_floorplan_file") or ""
+        ).strip()
+        if not filename:
+            return None
+
+    if not os.path.isfile(
+        os.path.join(
+            GENERATED_DIR,
+            os.path.basename(filename),
+        )
+    ):
+        return None
+
+    session["modified_floorplan_file"] = filename
+    return filename
+
+
+def floorplan_cache_enabled() -> bool:
+    """평면도 생성 결과를 재사용할지 여부.
+
+    끄면 같은 사진이어도 Gemini를 매번 다시 호출한다. 무료 등급은 RPD가
+    빠듯하므로(호출 2번 = 평면도 1장) 모델 비교 같은 때만 끄는 것이 좋다.
+    """
+    return os.getenv(
+        "FLOORPLAN_CACHE",
+        "1",
+    ).strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
+
+
 def current_room_plan():
     """세션에 담긴 방 실측치 → 면적·평수 요약. 없으면 (None, False).
 
@@ -1669,7 +1731,9 @@ def floorplan():
                 .generate_floorplan_for_web(
                     upload_path,
                     GENERATED_DIR,
-                    skip_existing=True,
+                    skip_existing=(
+                        floorplan_cache_enabled()
+                    ),
                     room_width=(
                         room_width
                     ),
@@ -1847,11 +1911,30 @@ def floorplan():
         floorplan_error = str(
             exc
         )
-        if getattr(
+
+        # google-genai 예외는 status_code가 아니라 code에 HTTP 상태를 담는다.
+        gemini_status = (
+            api_status_code(
+                exc
+            )
+            or getattr(
+                exc,
+                "status_code",
+                None,
+            )
+        )
+
+        if isinstance(
             exc,
-            "status_code",
-            None,
-        ) == 429:
+            GeminiBusyError,
+        ):
+            floorplan_error = (
+                "AI 서버가 일시적으로 혼잡합니다. "
+                "잠시 후 다시 시도해 주세요."
+            )
+            floorplan_status = 503
+
+        elif gemini_status == 429:
             floorplan_status = 429
 
         print(
@@ -1999,7 +2082,16 @@ def save_floorplan_edit():
     "/furniture-choice"
 )
 def furniture_choice():
-    """탐지된 기존 가구의 유지·제거·교체 선택 화면을 표시한다."""
+    """탐지된 기존 가구의 유지·제거·교체 선택 화면을 표시한다.
+
+    [임시] 가구 선택과 상품 추천 단계를 건너뛰고 /floorplan 다음에 바로
+    /result 로 보낸다. 라우트 자체는 남겨 둬야 템플릿의
+    url_for("furniture_choice")가 BuildError 없이 동작한다.
+    아래 return 두 줄만 지우면 원래 화면으로 돌아온다.
+    """
+    carry_floorplan_to_result()
+    return redirect(url_for("result"))
+
     if (
         "mood_prompt"
         not in session
@@ -2108,7 +2200,14 @@ def price_within_filter(price, price_min, price_max):
     ],
 )
 def product_selection():
-    """가구 유형별 추천 상품을 검색해 선택 화면에 표시한다."""
+    """가구 유형별 추천 상품을 검색해 선택 화면에 표시한다.
+
+    [임시] furniture_choice와 같은 이유로 /result 로 보낸다.
+    아래 return 두 줄만 지우면 원래 화면으로 돌아온다.
+    """
+    carry_floorplan_to_result()
+    return redirect(url_for("result"))
+
     if (
         "mood_prompt"
         not in session
@@ -2514,6 +2613,45 @@ def product_selection():
                 0,
             )
         )
+
+        # 아래 루프는 가구 종류마다 SerpApi를 한 번씩 부른다. 순차로 돌면
+        # 종류 수 x 12초(실측 중앙값)가 그대로 대기 시간이 되어, 13종을 고르면
+        # 2분 30초를 넘긴다. 질의 생성은 규칙 기반이라 API를 쓰지 않으므로
+        # 먼저 모든 질의를 만들어 한꺼번에 병렬로 받아 둔다. 루프 자체의 순서와
+        # 누적 상태는 건드리지 않으므로 추천 결과는 달라지지 않는다.
+        try:
+            provider.prefetch(
+                [
+                    query
+                    for item_type in purchase_items
+                    for query in (
+                        furniture_recommender
+                        .generate_search_queries(
+                            furniture_recommender
+                            .normalize_category(
+                                item_type
+                            ),
+                            dict(
+                                mood_analysis.get(
+                                    "mood_scores",
+                                    {},
+                                )
+                            ),
+                            observed,
+                            str(
+                                recommendation_session_id
+                            ),
+                            request_round,
+                        )
+                    )
+                ]
+            )
+        except Exception as prefetch_exc:
+            print(
+                "[product-selection] "
+                "사전 조회 실패, 순차 조회로 진행: "
+                f"{prefetch_exc}"
+            )
 
         for item_type in purchase_items:
             label = (
@@ -4135,7 +4273,7 @@ def dev_use_cached():
 
 @app.route("/preview-3d")
 def preview_3d():
-    """최종 평면도 배치를 3D 미리보기 데이터로 변환해 표시한다."""
+    """최종 배치의 AI 입체 SVG와 정확한 3D 배치 화면을 표시한다."""
     if (
         "uploaded_file"
         not in session
@@ -4152,6 +4290,8 @@ def preview_3d():
 
     scene_3d = None
     scene_error = None
+    svg_render_url = None
+    svg_render_error = None
 
     if not layout_path:
         scene_error = (
@@ -4194,6 +4334,91 @@ def preview_3d():
                     "3D로 보여줄 것이 없습니다."
                 )
 
+            elif os.getenv(
+                "ENABLE_GEMINI_SVG_RENDER",
+                "true",
+            ).strip().lower() in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            }:
+                try:
+                    selected_products = (
+                        load_session_json_cache(
+                            "selected_products_file",
+                            default=[],
+                        )
+                    )
+                    if not isinstance(
+                        selected_products,
+                        list,
+                    ):
+                        selected_products = []
+
+                    upload_path = (
+                        Path(UPLOAD_DIR)
+                        / os.path.basename(
+                            str(
+                                session.get(
+                                    "uploaded_file",
+                                    "",
+                                )
+                            )
+                        )
+                    )
+                    style_prompt = " ".join(
+                        [
+                            str(
+                                session.get(
+                                    "mood_prompt",
+                                    "",
+                                )
+                            ).strip(),
+                            " ".join(
+                                str(tag)
+                                for tag
+                                in session.get(
+                                    "style_tags",
+                                    [],
+                                )
+                                if str(tag).strip()
+                            ),
+                        ]
+                    ).strip()
+                    render_path = (
+                        gemini_room_svg_render
+                        .generate_room_svg(
+                            scene_3d,
+                            upload_path,
+                            selected_products,
+                            GENERATED_DIR,
+                            style_prompt=style_prompt,
+                        )
+                    )
+                    static_relative = (
+                        render_path.resolve()
+                        .relative_to(
+                            Path(
+                                app.static_folder
+                            ).resolve()
+                        )
+                        .as_posix()
+                    )
+                    svg_render_url = url_for(
+                        "static",
+                        filename=static_relative,
+                    )
+                except Exception as render_exc:
+                    svg_render_error = (
+                        "AI 입체 SVG를 만들지 못해 "
+                        "정확한 3D 배치 화면으로 대신합니다."
+                    )
+                    print(
+                        "[gemini-room-svg] "
+                        f"생성 실패: {render_exc}"
+                    )
+
         except Exception as exc:
             scene_error = (
                 "3D 배치 정보를 읽지 "
@@ -4210,6 +4435,12 @@ def preview_3d():
         scene_3d=scene_3d,
         scene_error=scene_error,
         layout_source=layout_source,
+        svg_render_url=(
+            svg_render_url
+        ),
+        svg_render_error=(
+            svg_render_error
+        ),
     )
 
 
