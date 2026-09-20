@@ -125,6 +125,7 @@ login_manager.login_message = "로그인이 필요한 페이지입니다."
 
 @login_manager.user_loader
 def load_user(user_id):
+    """세션에 저장된 사용자 ID로 사용자 정보를 조회한다."""
     try:
         return db.session.get(
             User,
@@ -227,7 +228,7 @@ PURCHASE_ITEM_IDS = {
 def build_purchase_items(
     purchase_types,
 ):
-    """Convert persisted furniture type names into result-view records."""
+    """저장된 구매 가구 유형을 결과 화면용 항목으로 변환한다."""
     return [
         {
             "type": item_type,
@@ -249,7 +250,7 @@ def parse_saved_json(
     raw,
     default,
 ):
-    """Read a JSON snapshot without allowing one damaged row to break a page."""
+    """저장된 JSON을 안전하게 읽고 손상된 값에는 기본값을 반환한다."""
     try:
         value = json.loads(
             raw or ""
@@ -282,6 +283,7 @@ PURCHASE_POSITIONS = [
 def allowed_file(
     filename: str,
 ) -> bool:
+    """업로드 파일의 확장자가 허용 목록에 포함되는지 확인한다."""
     return (
         "." in filename
         and filename
@@ -314,6 +316,7 @@ def safe_int(
     value,
     default=0,
 ):
+    """값을 정수로 변환하고 실패하면 기본값을 반환한다."""
     try:
         if (
             value is None
@@ -328,6 +331,47 @@ def safe_int(
         TypeError,
     ):
         return default
+
+
+def portable_basename(value):
+    """Windows와 POSIX 경로에서 안전하게 파일명만 추출한다."""
+    text = str(value or "").strip().replace("\\", "/")
+    filename = text.rsplit("/", 1)[-1] if text else ""
+    return "" if filename in {"", ".", ".."} else filename
+
+
+def resolve_generated_file(value):
+    """저장된 파일명이나 경로를 현재 생성 결과 폴더 기준으로 해석한다."""
+    if not value:
+        return None
+
+    filename = portable_basename(value)
+    if not filename:
+        return None
+
+    current_path = Path(GENERATED_DIR) / filename
+    if current_path.is_file():
+        return str(current_path)
+
+    stored_path = Path(str(value))
+    if stored_path.is_absolute() and stored_path.is_file():
+        return str(stored_path)
+    return None
+
+
+def resolve_session_generated_file(key):
+    """세션 경로를 이동 가능한 파일명으로 바꾸고 오래된 참조를 제거한다."""
+    stored_value = session.get(key)
+    resolved_path = resolve_generated_file(stored_value)
+    if resolved_path:
+        portable_value = portable_basename(resolved_path)
+        if stored_value != portable_value:
+            session[key] = portable_value
+        return resolved_path
+
+    if stored_value:
+        session.pop(key, None)
+    return None
 
 
 def save_json_cache(
@@ -379,24 +423,7 @@ def load_json_cache(
     if not filename:
         return default
 
-    safe_filename = os.path.basename(
-        filename
-    )
-
-    # A saved history entry owns an immutable reference to this product
-    # snapshot. Do not remove it when a later pipeline run replaces the
-    # current session's selected-products cache.
-    if (
-        SavedDesign.query
-        .filter_by(
-            selected_products_file=(
-                safe_filename
-            )
-        )
-        .first()
-        is not None
-    ):
-        return
+    safe_filename = portable_basename(filename)
 
     file_path = os.path.join(
         PRODUCT_CACHE_DIR,
@@ -430,6 +457,35 @@ def load_json_cache(
         return default
 
 
+def load_session_json_cache(
+    key,
+    default=None,
+):
+    """세션의 JSON 캐시를 읽고 존재하지 않는 파일 참조는 제거한다."""
+    if default is None:
+        default = {}
+
+    filename = session.get(key)
+    if not filename:
+        return default
+
+    safe_filename = portable_basename(filename)
+    file_path = os.path.join(
+        PRODUCT_CACHE_DIR,
+        safe_filename,
+    )
+    if not os.path.isfile(file_path):
+        session.pop(key, None)
+        return default
+
+    if filename != safe_filename:
+        session[key] = safe_filename
+    return load_json_cache(
+        safe_filename,
+        default=default,
+    )
+
+
 def remove_cache_file(
     filename,
 ):
@@ -440,9 +496,22 @@ def remove_cache_file(
     if not filename:
         return
 
-    safe_filename = os.path.basename(
-        filename
-    )
+    safe_filename = portable_basename(filename)
+
+    # A saved history entry owns an immutable reference to this product
+    # snapshot. Do not remove it when a later pipeline run replaces the
+    # current session's selected-products cache.
+    if (
+        SavedDesign.query
+        .filter_by(
+            selected_products_file=(
+                safe_filename
+            )
+        )
+        .first()
+        is not None
+    ):
+        return
 
     file_path = os.path.join(
         PRODUCT_CACHE_DIR,
@@ -465,6 +534,7 @@ def remove_cache_file(
 
 
 def product_recommendation_mood_key():
+    """현재 무드 조건을 상품 추천 캐시 식별자로 변환한다."""
     payload = {
         "prompt": str(
             session.get(
@@ -633,7 +703,7 @@ def product_matches_furniture_type(
     product,
     item_type,
 ):
-    """Reject mood-word matches that are not the requested furniture."""
+    """검색 상품이 요청한 가구 유형과 실제로 일치하는지 확인한다."""
     category_text = " ".join(
         str(
             product.get(
@@ -870,6 +940,7 @@ def _mood_v1_results_to_urls(
 # ──────────────────────────────────────────────────────
 @app.route("/")
 def index():
+    """서비스의 첫 화면을 표시한다."""
     return render_template(
         "index.html"
     )
@@ -877,6 +948,7 @@ def index():
 
 @app.route("/gallery")
 def gallery():
+    """무드 이미지 갤러리를 수집해 화면에 표시한다."""
     from mood_pipeline.preprocess import (
         collect_image_paths,
     )
@@ -911,6 +983,7 @@ def gallery():
 @app.route("/my-designs")
 @login_required
 def my_designs():
+    """현재 사용자가 저장한 디자인 목록을 표시한다."""
     designs = (
         SavedDesign.query
         .filter_by(
@@ -930,6 +1003,7 @@ def my_designs():
 @app.route("/my-designs/<int:design_id>")
 @login_required
 def design_detail(design_id):
+    """선택한 저장 디자인의 상세 정보와 결과물을 표시한다."""
     design = db.session.get(
         SavedDesign,
         design_id,
@@ -1004,6 +1078,7 @@ def design_detail(design_id):
 )
 @login_required
 def delete_design(design_id):
+    """현재 사용자가 소유한 저장 디자인을 삭제한다."""
     design = db.session.get(
         SavedDesign,
         design_id,
@@ -1024,13 +1099,14 @@ def delete_design(design_id):
 
 @app.route("/about")
 def about():
+    """서비스 소개 화면을 표시한다."""
     return render_template(
         "about.html"
     )
 
 
 def clear_design_session():
-    """Reset the design workflow without logging the current user out."""
+    """로그인 상태를 유지하면서 디자인 작업 세션만 초기화한다."""
     login_state = {
         key: session[key]
         for key in (
@@ -1048,6 +1124,7 @@ def clear_design_session():
 
 @app.route("/start")
 def start():
+    """이전 디자인 세션을 비우고 무드 입력 단계로 이동한다."""
     clear_design_session()
 
     return redirect(
@@ -1062,6 +1139,7 @@ def start():
 # ──────────────────────────────────────────────────────
 @app.route("/prompt")
 def prompt():
+    """사용자에게 원하는 인테리어 무드를 입력받는 화면을 표시한다."""
     return render_template(
         "prompt.html",
         previews=[],
@@ -1073,6 +1151,7 @@ def prompt():
     methods=["POST"],
 )
 def save_style():
+    """선택한 스타일 태그와 무드 문장을 세션에 저장한다."""
     data = (
         request.get_json(
             silent=True
@@ -1153,6 +1232,7 @@ def save_style():
 
 @app.route("/mood-search")
 def mood_search_api():
+    """입력 문장과 유사한 무드 이미지를 검색해 JSON으로 반환한다."""
     query = (
         request.args.get(
             "q"
@@ -1252,6 +1332,7 @@ def mood_search_api():
 def mood_image(
     filename,
 ):
+    """원본 무드 이미지 파일을 안전하게 전달한다."""
     from flask import (
         send_from_directory,
     )
@@ -1270,6 +1351,7 @@ def mood_image(
 def mood_library_image(
     filename,
 ):
+    """생성된 무드 라이브러리 이미지 파일을 안전하게 전달한다."""
     from flask import (
         send_from_directory,
     )
@@ -1293,6 +1375,7 @@ def mood_library_image(
     ],
 )
 def upload():
+    """방 사진과 실측 정보를 입력받아 업로드 단계를 처리한다."""
     if (
         request.method
         == "GET"
@@ -1539,6 +1622,7 @@ def upload():
 # ──────────────────────────────────────────────────────
 @app.route("/loading")
 def loading():
+    """업로드 이후 평면도 생성 대기 화면을 표시한다."""
     if (
         "uploaded_file"
         not in session
@@ -1603,6 +1687,7 @@ def current_room_plan():
 
 @app.route("/floorplan")
 def floorplan():
+    """업로드한 방 사진으로 평면도를 생성하고 편집 화면을 표시한다."""
     if (
         "uploaded_file"
         not in session
@@ -1662,6 +1747,7 @@ def floorplan():
 
     svg_markup = None
     floorplan_error = None
+    floorplan_status = 200
     scene_3d = None
 
     upload_path = os.path.join(
@@ -1700,8 +1786,10 @@ def floorplan():
         layout_file = result.get(
             "layout_file"
         )
-        saved_edit_layout = str(
-            session.get("edited_floorplan_layout_file")
+        saved_edit_layout = (
+            resolve_session_generated_file(
+                "edited_floorplan_layout_file"
+            )
             or ""
         )
         saved_edit_upload = str(
@@ -1719,7 +1807,9 @@ def floorplan():
         if layout_file:
             session[
                 "floorplan_layout_file"
-            ] = layout_file
+            ] = portable_basename(
+                layout_file
+            )
 
         svg_path = result.get(
             "svg_path"
@@ -1861,6 +1951,12 @@ def floorplan():
         floorplan_error = str(
             exc
         )
+        if getattr(
+            exc,
+            "status_code",
+            None,
+        ) == 429:
+            floorplan_status = 429
 
         print(
             "[floorplan] "
@@ -1910,22 +2006,26 @@ def floorplan():
                 "detected_furniture"
             ] = []
 
-    return render_template(
-        "floorplan.html",
-        plan=plan,
-        dimensions_provided=(
-            dimensions_provided
+    return (
+        render_template(
+            "floorplan.html",
+            plan=plan,
+            dimensions_provided=(
+                dimensions_provided
+            ),
+            svg_markup=svg_markup,
+            floorplan_error=(
+                floorplan_error
+            ),
+            scene_3d=scene_3d,
         ),
-        svg_markup=svg_markup,
-        floorplan_error=(
-            floorplan_error
-        ),
-        scene_3d=scene_3d,
+        floorplan_status,
     )
 
 
 @app.post("/floorplan/save-edit")
 def save_floorplan_edit():
+    """사용자가 편집한 평면도 SVG와 배치 정보를 저장한다."""
     if "uploaded_file" not in session:
         return jsonify(
             {"ok": False, "error": "업로드된 방 사진이 없습니다."}
@@ -1946,8 +2046,10 @@ def save_floorplan_edit():
             sanitized,
             encoding="utf-8",
         )
-        layout_path = str(
-            session.get("floorplan_layout_file")
+        layout_path = (
+            resolve_session_generated_file(
+                "floorplan_layout_file"
+            )
             or ""
         )
         if layout_path and os.path.isfile(layout_path):
@@ -1973,11 +2075,11 @@ def save_floorplan_edit():
                 ),
                 encoding="utf-8",
             )
-            session["edited_floorplan_layout_file"] = str(
-                edited_layout_path
+            session["edited_floorplan_layout_file"] = (
+                edited_layout_path.name
             )
-            session["floorplan_layout_file"] = str(
-                edited_layout_path
+            session["floorplan_layout_file"] = (
+                edited_layout_path.name
             )
         session["edited_floorplan_file"] = filename
         session["edited_floorplan_upload"] = str(
@@ -2001,6 +2103,7 @@ def save_floorplan_edit():
     "/furniture-choice"
 )
 def furniture_choice():
+    """탐지된 기존 가구의 유지·제거·교체 선택 화면을 표시한다."""
     if (
         "mood_prompt"
         not in session
@@ -2047,6 +2150,7 @@ def furniture_choice():
 
 
 def default_furniture_choices():
+    """탐지된 가구 목록으로 기본 유지 선택값을 생성한다."""
     return [
         {
             "id": item.get(
@@ -2076,7 +2180,7 @@ def default_furniture_choices():
 # STEP 5: 종류별 네이버 쇼핑 상품 추천 및 선택
 # ──────────────────────────────────────────────────────
 def parse_price_filter_value(raw):
-    """Convert an optional comma-separated won amount to a non-negative int."""
+    """쉼표가 포함될 수 있는 가격 입력을 0 이상의 정수로 변환한다."""
     if raw is None:
         return None
     raw_text = str(raw).strip().replace(",", "")
@@ -2090,7 +2194,7 @@ def parse_price_filter_value(raw):
 
 
 def price_within_filter(price, price_min, price_max):
-    """Return whether a known product price is inside the requested range."""
+    """상품 가격이 사용자가 지정한 최소·최대 범위에 포함되는지 확인한다."""
     if not price:
         return False
     if price_min is not None and price < price_min:
@@ -2108,6 +2212,7 @@ def price_within_filter(price, price_min, price_max):
     ],
 )
 def product_selection():
+    """가구 유형별 추천 상품을 검색해 선택 화면에 표시한다."""
     if (
         "mood_prompt"
         not in session
@@ -2687,6 +2792,7 @@ def product_selection():
 def read_generated_svg(
     filename,
 ):
+    """생성 결과 폴더의 SVG 파일을 읽어 문자열로 반환한다."""
     if not filename:
         return None
 
@@ -2718,7 +2824,8 @@ def create_modified_floorplan(
     furniture_choices,
     selected_products,
 ):
-    layout_path = session.get(
+    """가구 선택과 구매 상품을 반영한 수정 평면도를 생성한다."""
+    layout_path = resolve_session_generated_file(
         "floorplan_layout_file"
     )
 
@@ -3087,6 +3194,7 @@ def create_modified_floorplan(
     methods=["POST"],
 )
 def generate_design():
+    """최종 선택 상품을 반영해 디자인 결과와 수정 평면도를 생성한다."""
     if (
         "mood_prompt"
         not in session
@@ -3391,6 +3499,7 @@ def generate_design():
     methods=["POST"],
 )
 def toggle_furniture():
+    """가구 유지·제거·교체 상태를 변경하고 수정 평면도를 갱신한다."""
     data = (
         request.get_json(
             silent=True
@@ -3474,10 +3583,8 @@ def toggle_furniture():
     ] = furniture_choices
 
     selected_products = (
-        load_json_cache(
-            session.get(
-                "selected_products_file"
-            ),
+        load_session_json_cache(
+            "selected_products_file",
             default=[],
         )
     )
@@ -3521,6 +3628,7 @@ def toggle_furniture():
     methods=["GET"],
 )
 def search_products():
+    """검색어와 필터 조건으로 추가 상품을 검색해 JSON으로 반환한다."""
     query = (
         request.args.get(
             "q"
@@ -3584,6 +3692,7 @@ def search_products():
     methods=["POST"],
 )
 def add_product():
+    """사용자가 고른 상품을 선택 목록에 추가하고 결과를 갱신한다."""
     data = (
         request.get_json(
             silent=True
@@ -3628,10 +3737,8 @@ def add_product():
         ), 400
 
     selected_products = (
-        load_json_cache(
-            session.get(
-                "selected_products_file"
-            ),
+        load_session_json_cache(
+            "selected_products_file",
             default=[],
         )
     )
@@ -3736,6 +3843,7 @@ def add_product():
 # ──────────────────────────────────────────────────────
 @app.route("/result")
 def result():
+    """완성된 인테리어 디자인 결과 화면을 표시한다."""
     generated_file = session.get(
         "generated_file"
     )
@@ -3771,10 +3879,8 @@ def result():
     )
 
     selected_products = (
-        load_json_cache(
-            session.get(
-                "selected_products_file"
-            ),
+        load_session_json_cache(
+            "selected_products_file",
             default=[],
         )
     )
@@ -3830,38 +3936,17 @@ def resolve_final_layout_path():
     2) edited_floorplan_layout_file — 평면도 화면에서 드래그로 직접 고친 layout
     3) floorplan_layout_file — AI가 처음 만든 layout
     """
-    modified_name = session.get(
-        "modified_layout_file"
+    candidates = (
+        ("modified_layout_file", "modified"),
+        ("edited_floorplan_layout_file", "edited"),
+        ("floorplan_layout_file", "original"),
     )
-
-    if modified_name:
-        candidate = os.path.join(
-            GENERATED_DIR,
-            os.path.basename(
-                modified_name
-            ),
+    for session_key, source in candidates:
+        resolved_path = resolve_session_generated_file(
+            session_key
         )
-
-        if os.path.isfile(candidate):
-            return candidate, "modified"
-
-    edited_path = session.get(
-        "edited_floorplan_layout_file"
-    )
-
-    if edited_path and os.path.isfile(
-        edited_path
-    ):
-        return edited_path, "edited"
-
-    original_path = session.get(
-        "floorplan_layout_file"
-    )
-
-    if original_path and os.path.isfile(
-        original_path
-    ):
-        return original_path, "original"
+        if resolved_path:
+            return resolved_path, source
 
     return None, None
 
@@ -3918,6 +4003,7 @@ def cached_floorplan_uploads():
 
 @app.route("/dev/use-cached")
 def dev_use_cached():
+    """개발 환경에서 기존 평면도 캐시를 세션에 연결해 재사용한다."""
     if not app.debug:
         abort(404)
 
@@ -3930,7 +4016,7 @@ def dev_use_cached():
         "",
     ).strip()
 
-    # 목록만 보여준다 (어떤 파일을 쓸 수 있는지 확인용)
+    # 파일을 지정하지 않으면 재사용 가능한 캐시 목록을 JSON으로 반환한다.
     if not requested:
         return jsonify(
             {
@@ -3938,25 +4024,6 @@ def dev_use_cached():
                     available
                 ),
                 "files": available,
-                "usage": (
-                    "/dev/use-cached"
-                    "?file=<파일명|latest>"
-                    "&to=3d|floorplan|step5"
-                    "|furniture|result"
-                    "&width=3.6&depth=5.0"
-                    "&ceiling=2.4"
-                    "&prompt=<무드 문장>"
-                ),
-                "shortcuts": {
-                    "3d": (
-                        "/dev/use-cached"
-                        "?file=latest"
-                    ),
-                    "step5": (
-                        "/dev/use-cached"
-                        "?file=latest&to=step5"
-                    ),
-                },
             }
         )
 
@@ -4031,6 +4098,7 @@ def dev_use_cached():
     ] = ""
 
     def _dimension(key, fallback):
+        """쿼리 문자열의 방 치수를 읽고 유효하지 않으면 기본값을 쓴다."""
         raw = request.args.get(
             key,
             "",
@@ -4072,10 +4140,7 @@ def dev_use_cached():
 
     session[
         "floorplan_layout_file"
-    ] = os.path.join(
-        GENERATED_DIR,
-        f"{stem}_model2_layout.json",
-    )
+    ] = f"{stem}_model2_layout.json"
 
     session[
         "original_floorplan_file"
@@ -4085,12 +4150,15 @@ def dev_use_cached():
 
     # STEP 4·5 가 기존 가구 목록을 쓰므로 캐시된 layout 에서 같은 형태로 채운다
     try:
+        cached_layout_path = resolve_session_generated_file(
+            "floorplan_layout_file"
+        )
+        if not cached_layout_path:
+            raise FileNotFoundError(
+                "캐시된 평면도 layout 파일을 찾을 수 없습니다."
+            )
         cached_layout = json.loads(
-            Path(
-                session[
-                    "floorplan_layout_file"
-                ]
-            ).read_text(
+            Path(cached_layout_path).read_text(
                 encoding="utf-8"
             )
         )
@@ -4171,6 +4239,7 @@ def dev_use_cached():
 
 @app.route("/preview-3d")
 def preview_3d():
+    """최종 평면도 배치를 3D 미리보기 데이터로 변환해 표시한다."""
     if (
         "uploaded_file"
         not in session
@@ -4253,6 +4322,7 @@ def preview_3d():
     methods=["POST"],
 )
 def save_design():
+    """현재 디자인 결과와 관련 캐시 정보를 사용자 계정에 저장한다."""
     if not current_user.is_authenticated:
         return jsonify(
             {
@@ -4320,10 +4390,8 @@ def save_design():
                 }
             ), 400
 
-    selected_products = load_json_cache(
-        session.get(
-            "selected_products_file"
-        ),
+    selected_products = load_session_json_cache(
+        "selected_products_file",
         default=[],
     )
     if not isinstance(
@@ -4396,6 +4464,7 @@ def save_design():
 def item_id_to_query(
     item_id,
 ):
+    """추천 항목 ID를 네이버 쇼핑 검색어로 변환한다."""
     query_map = {
         "chair-001": (
             "원목 의자"
@@ -4445,6 +4514,7 @@ YOLO_MODEL = None
 
 
 def get_yolo_model():
+    """YOLO 가구 탐지 모델을 한 번만 불러와 재사용한다."""
     global YOLO_MODEL
 
     if YOLO_MODEL is None:
@@ -4463,6 +4533,7 @@ def get_yolo_model():
 def detect_furniture_from_image(
     image_path,
 ):
+    """방 이미지에서 YOLO로 가구를 탐지해 정규화된 목록을 반환한다."""
     model = get_yolo_model()
 
     results = model.predict(
@@ -4536,6 +4607,7 @@ def detect_furniture_from_image(
 def detected_item_to_type(
     item_name,
 ):
+    """탐지된 한국어 가구 이름을 내부 가구 유형 코드로 변환한다."""
     type_map = {
         "침대": "bed",
         "소파": "unknown",
@@ -4553,6 +4625,7 @@ def detected_item_to_type(
 
 @app.route("/recommend")
 def recommend():
+    """항목 ID에 맞는 쇼핑 상품을 검색해 추천 화면에 표시한다."""
     item_id = request.args.get(
         "item",
         "chair-001",

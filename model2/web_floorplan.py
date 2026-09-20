@@ -89,7 +89,10 @@ def enrich_products_with_visual_profiles(
     cache_dir: str | Path,
 ) -> list[dict[str, Any]]:
     """Analyze selected product photos with Gemini, with a local fallback."""
-    cache_root = Path(cache_dir)
+    cache_root = Path(cache_dir).expanduser()
+    if not cache_root.is_absolute():
+        cache_root = PROJECT_ROOT / cache_root
+    cache_root = cache_root.resolve()
     gemini_cache_dir = cache_root / "product_visuals_gemini_v3"
     local_cache_dir = cache_root / "product_visuals_local_v3"
     # Bump the cache whenever the photo-to-icon contract changes.  Reusing
