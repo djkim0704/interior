@@ -10,6 +10,17 @@ venv-win/
 local_backup/
 model2/output/
 
+# 로컬 Python 설치·의존성 산출물
+/python-*.exe
+/python-install*.log
+*.whl
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
 # 환경변수
 .env
 backend/app.db
