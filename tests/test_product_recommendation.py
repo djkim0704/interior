@@ -70,7 +70,6 @@ class MockProvider:
         self,
         query: str,
         display: int = 30,
-        start: int = 1,
     ) -> list[dict[str, Any]]:
         self.queries.append(query)
         return [dict(item) for item in self.items[:display]]
@@ -179,7 +178,7 @@ class RecommendationTests(unittest.TestCase):
         self.assertNotIn("콘크리트", query_text)
         self.assertNotIn("오크", query_text)
 
-    def test_low_result_fallback_keeps_primary_mood(self) -> None:
+    def test_recommendation_uses_one_provider_query(self) -> None:
         provider = MockProvider([])
         recommend_furniture(
             "sofa",
@@ -191,9 +190,7 @@ class RecommendationTests(unittest.TestCase):
             set(),
             provider=provider,
         )
-        self.assertTrue(provider.queries)
-        self.assertIn("파스텔", provider.queries[-1])
-        self.assertNotEqual(provider.queries[-1], "소파")
+        self.assertEqual(len(provider.queries), 1)
 
     def test_forbidden_material_category_pair_removed(self) -> None:
         queries = generate_search_queries(
@@ -204,12 +201,11 @@ class RecommendationTests(unittest.TestCase):
         )
         self.assertFalse(any("부클" in query for query in queries))
 
-    def test_queries_have_no_more_than_two_attributes(self) -> None:
+    def test_query_has_no_more_than_two_attributes(self) -> None:
         queries = generate_search_queries(
             "sofa", MOODS, OBSERVED, "session", 0
         )
-        self.assertGreaterEqual(len(queries), 5)
-        self.assertLessEqual(len(queries), 6)
+        self.assertEqual(len(queries), 1)
         self.assertTrue(all(len(query.split()) <= 3 for query in queries))
 
     def test_query_generation_is_deterministic_per_round(self) -> None:

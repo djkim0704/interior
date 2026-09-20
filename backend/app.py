@@ -298,8 +298,7 @@ def allowed_file(
 
 def clean_html(text):
     """
-    네이버 쇼핑 상품명에 포함된
-    HTML 태그를 제거한다.
+    쇼핑 API 상품명에 포함된 HTML 태그를 제거한다.
     """
 
     if text is None:
@@ -567,123 +566,20 @@ def product_recommendation_mood_key():
     ).hexdigest()
 
 
-def search_naver_shopping(
+def search_serpapi_shopping(
     query,
     display=5,
     item_type=None,
 ):
-    """
-    네이버 쇼핑 검색 API를 호출한다.
-    """
-
-    client_id = os.getenv(
-        "NAVER_CLIENT_ID"
+    """SerpApi Google Shopping을 호출해 기존 상품 형식으로 반환한다."""
+    provider = (
+        furniture_recommender
+        .SerpApiShoppingProvider()
     )
-
-    client_secret = os.getenv(
-        "NAVER_CLIENT_SECRET"
+    products = provider.search(
+        query,
+        display=display,
     )
-
-    if (
-        not client_id
-        or not client_secret
-    ):
-        raise ValueError(
-            ".env에서 NAVER_CLIENT_ID 또는 "
-            "NAVER_CLIENT_SECRET을 "
-            "불러오지 못했습니다."
-        )
-
-    url = (
-        "https://openapi.naver.com/"
-        "v1/search/shop.json"
-    )
-
-    headers = {
-        "X-Naver-Client-Id": (
-            client_id
-        ),
-        "X-Naver-Client-Secret": (
-            client_secret
-        ),
-    }
-
-    params = {
-        "query": query,
-        "display": display,
-        "start": 1,
-        "sort": "sim",
-        "exclude": (
-            "used:rental:cbshop"
-        ),
-    }
-
-    # 실행 환경에 잘못된 HTTP(S)_PROXY가 있어도 네이버 공식 API 요청은
-    # 직접 연결한다. 전역 환경변수나 다른 요청의 프록시 설정은 변경하지 않는다.
-    with requests.Session() as naver_session:
-        naver_session.trust_env = False
-        response = naver_session.get(
-            url,
-            headers=headers,
-            params=params,
-            timeout=10,
-        )
-
-    if response.status_code != 200:
-        print(
-            "네이버 API 요청 실패:",
-            response.status_code,
-            response.text,
-        )
-
-        response.raise_for_status()
-
-    data = response.json()
-
-    products = []
-
-    for item in data.get(
-        "items",
-        [],
-    ):
-        products.append(
-            {
-                "title": clean_html(
-                    item.get(
-                        "title"
-                    )
-                ),
-                "link": item.get(
-                    "link"
-                ),
-                "image": item.get(
-                    "image"
-                ),
-                "price": safe_int(
-                    item.get(
-                        "lprice"
-                    )
-                ),
-                "shop": item.get(
-                    "mallName"
-                ),
-                "brand": item.get(
-                    "brand"
-                ),
-                "category1": item.get(
-                    "category1"
-                ),
-                "category2": item.get(
-                    "category2"
-                ),
-                "category3": item.get(
-                    "category3"
-                ),
-                "category4": item.get(
-                    "category4"
-                ),
-            }
-        )
 
     if item_type:
         products = [
@@ -2177,7 +2073,7 @@ def default_furniture_choices():
 
 
 # ──────────────────────────────────────────────────────
-# STEP 5: 종류별 네이버 쇼핑 상품 추천 및 선택
+# STEP 5: 종류별 Google Shopping 상품 추천 및 선택
 # ──────────────────────────────────────────────────────
 def parse_price_filter_value(raw):
     """쉼표가 포함될 수 있는 가격 입력을 0 이상의 정수로 변환한다."""
@@ -2434,7 +2330,7 @@ def product_selection():
         "mood_key"
     )
 
-    recommendation_version = 15
+    recommendation_version = 16
     cached_recommendation_version = (
         cached_data.get(
             "recommendation_version"
@@ -2578,7 +2474,7 @@ def product_selection():
 
         provider = (
             furniture_recommender
-            .NaverShoppingProvider()
+            .SerpApiShoppingProvider()
         )
         image_similarity_service = None
         if (
@@ -3648,7 +3544,7 @@ def search_products():
 
     try:
         products = (
-            search_naver_shopping(
+            search_serpapi_shopping(
                 query,
                 display=6,
             )
@@ -4464,7 +4360,7 @@ def save_design():
 def item_id_to_query(
     item_id,
 ):
-    """추천 항목 ID를 네이버 쇼핑 검색어로 변환한다."""
+    """추천 항목 ID를 Google Shopping 검색어로 변환한다."""
     query_map = {
         "chair-001": (
             "원목 의자"
@@ -4637,7 +4533,7 @@ def recommend():
         )
 
         products = (
-            search_naver_shopping(
+            search_serpapi_shopping(
                 query=query,
                 display=5,
             )
@@ -4648,7 +4544,7 @@ def recommend():
                 {
                     "ok": False,
                     "error": (
-                        "네이버 쇼핑 검색 "
+                        "Google Shopping 검색 "
                         "결과가 없습니다."
                     ),
                 }

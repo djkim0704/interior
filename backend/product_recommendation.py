@@ -40,14 +40,14 @@ except ImportError:
 LOGGER = logging.getLogger("furniture-recommendation")
 LOGGER.setLevel(logging.INFO)
 
-MAX_QUERIES_PER_CATEGORY = 6
 DISPLAY_PER_QUERY = 30
-MIN_UNIQUE_CANDIDATES = 80
-TARGET_CANDIDATES = 120
+#SerpApi 1회 응답에서 최대 30개 상품만 후보로 사용
 FINAL_RECOMMENDATION_COUNT = 8
+# 가구 종류별로 기본 8개를 추천
 MAX_SAME_BRAND = 1
+# 최종 추천 목록에 동일 브랜드 상품이 최대 1개만 들어가도록 제한
 MAX_SAME_MALL = 2
-
+# 동일 판매처의 상품은 최종 목록에 최대 2개까지만
 
 class ProductSearchProvider(Protocol):
     """Search backend used only for collecting product candidates."""
@@ -56,7 +56,6 @@ class ProductSearchProvider(Protocol):
         self,
         query: str,
         display: int = DISPLAY_PER_QUERY,
-        start: int = 1,
     ) -> list[dict[str, Any]]:
         """Return normalized product dictionaries."""
 
@@ -135,21 +134,30 @@ class ClipImageSimilarityService:
             return None
 
 
-class NaverShoppingProvider:
-    """Naver Shopping candidate provider with bounded retry behavior."""
+class SerpApiShoppingProvider:
+    """SerpApi Google Shopping 후보를 기존 내부 상품 형식으로 변환한다."""
 
-    endpoint = "https://openapi.naver.com/v1/search/shop.json"
+    endpoint = "https://serpapi.com/search.json"
 
     def __init__(
         self,
-        client_id: str | None = None,
-        client_secret: str | None = None,
+        api_key: str | None = None,
         *,
         timeout: float = 10.0,
-        retries: int = 1,
+        retries: int = 0,
     ) -> None:
-        self.client_id = client_id or os.getenv("NAVER_CLIENT_ID", "")
-        self.client_secret = client_secret or os.getenv("NAVER_CLIENT_SECRET", "")
+        self.api_key = (
+            api_key
+            or os.getenv("SERPAPI_API", "")
+            or os.getenv("SERPAPI_API_KEY", "")
+        )
+        self.google_domain = os.getenv(
+            "SERPAPI_GOOGLE_DOMAIN",
+            "google.co.kr",
+        ).strip()
+        self.country = os.getenv("SERPAPI_GL", "kr").strip()
+        self.language = os.getenv("SERPAPI_HL", "ko").strip()
+        self.location = os.getenv("SERPAPI_LOCATION", "").strip()
         self.timeout = timeout
         self.retries = max(0, min(int(retries), 2))
 
@@ -157,22 +165,23 @@ class NaverShoppingProvider:
         self,
         query: str,
         display: int = DISPLAY_PER_QUERY,
-        start: int = 1,
     ) -> list[dict[str, Any]]:
-        """Search Naver and normalize fields without applying recommendation logic."""
-        if not self.client_id or not self.client_secret:
-            raise ValueError("NAVER_CLIENT_ID 또는 NAVER_CLIENT_SECRET이 없습니다.")
-        headers = {
-            "X-Naver-Client-Id": self.client_id,
-            "X-Naver-Client-Secret": self.client_secret,
-        }
+        """SerpApi를 검색하고 추천 로직이 사용하는 공통 필드로 정규화한다."""
+        if not self.api_key:
+            raise ValueError(
+                "SERPAPI_API 또는 SERPAPI_API_KEY가 없습니다."
+            )
         params = {
-            "query": query,
-            "display": max(1, min(int(display), 100)),
-            "start": max(1, int(start)),
-            "sort": "sim",
-            "exclude": "used:rental:cbshop",
+            "engine": "google_shopping",
+            "q": query,
+            "api_key": self.api_key,
+            "google_domain": self.google_domain,
+            "gl": self.country,
+            "hl": self.language,
+            "device": "desktop",
         }
+        if self.location:
+            params["location"] = self.location
         last_error: Exception | None = None
         for attempt in range(self.retries + 1):
             try:
@@ -180,37 +189,75 @@ class NaverShoppingProvider:
                     http.trust_env = False
                     response = http.get(
                         self.endpoint,
-                        headers=headers,
                         params=params,
                         timeout=self.timeout,
                     )
                 if response.status_code != 200:
+                    try:
+                        error_payload = response.json()
+                        error_message = (
+                            str(error_payload.get("error") or "")
+                            if isinstance(error_payload, dict)
+                            else ""
+                        )
+                    except ValueError:
+                        error_message = ""
+                    error_message = error_message or response.text[:300]
                     LOGGER.warning(
                         "provider_error query=%r status=%s body=%s",
                         query,
                         response.status_code,
-                        response.text[:300],
+                        error_message,
                     )
-                response.raise_for_status()
-                return [
+                    raise ValueError(
+                        "SerpApi 요청 실패 "
+                        f"({response.status_code}): {error_message}"
+                    )
+                payload = response.json()
+                if not isinstance(payload, dict):
+                    raise ValueError("SerpApi 응답 형식이 올바르지 않습니다.")
+                if payload.get("error"):
+                    raise ValueError(str(payload["error"]))
+                products = [
                     {
-                        "productId": str(item.get("productId") or ""),
+                        "productId": str(item.get("product_id") or ""),
                         "title": clean_title(str(item.get("title") or "")),
-                        "link": item.get("link"),
-                        "image": item.get("image"),
-                        "price": _safe_int(item.get("lprice")),
-                        "shop": item.get("mallName"),
-                        "brand": item.get("brand"),
-                        "maker": item.get("maker"),
-                        "category1": item.get("category1"),
-                        "category2": item.get("category2"),
-                        "category3": item.get("category3"),
-                        "category4": item.get("category4"),
+                        "link": (
+                            item.get("link")
+                            or item.get("product_link")
+                        ),
+                        "image": (
+                            item.get("thumbnail")
+                            or item.get("serpapi_thumbnail")
+                        ),
+                        "price": _safe_int(item.get("extracted_price")),
+                        "shop": item.get("source"),
+                        "brand": item.get("brand") or "",
+                        "maker": item.get("maker") or "",
+                        "category1": " ".join(
+                            [
+                                str(item.get("snippet") or ""),
+                                *[
+                                    str(value)
+                                    for value in (
+                                        item.get("extensions") or []
+                                    )
+                                ],
+                            ]
+                        ).strip(),
+                        "category2": "",
+                        "category3": "",
+                        "category4": "",
                     }
-                    for item in response.json().get("items", [])
+                    for item in payload.get("shopping_results", [])
                 ]
+                return products[: max(1, min(int(display), 100))]
             except (requests.RequestException, ValueError) as exc:
-                last_error = exc
+                last_error = (
+                    RuntimeError("SerpApi 네트워크 요청에 실패했습니다.")
+                    if isinstance(exc, requests.RequestException)
+                    else exc
+                )
                 if attempt < self.retries:
                     time.sleep(0.25 * (attempt + 1))
         assert last_error is not None
@@ -237,7 +284,7 @@ def clean_title(title: str) -> str:
 
 
 def get_category_text(item: dict[str, Any]) -> str:
-    """Join Naver category1..category4 fields."""
+    """공급자가 제공한 카테고리·설명 필드를 검색용 문자열로 합친다."""
     return " ".join(
         str(item.get(f"category{index}") or "").strip()
         for index in range(1, 5)
@@ -576,9 +623,8 @@ def generate_search_queries(
     observed: dict[str, list[str]],
     session_id: str,
     request_round: int = 0,
-    max_queries: int = MAX_QUERIES_PER_CATEGORY,
 ) -> list[str]:
-    """Create short queries from one mood's distinctive search signature.
+    """Create one query from the selected mood's search signature.
 
     Secondary mood profiles are intentionally excluded here.  They still take
     part in product reranking and image similarity, but no longer leak generic
@@ -639,20 +685,12 @@ def generate_search_queries(
         staged.append(f"{forms[0]} {materials[0]} {noun}")
     staged.extend(f"{term} {noun}" for term in forms[:1])
 
-    # If category compatibility removed most signature materials, use the
-    # primary mood name as a final mood-safe query rather than borrowing terms
-    # from another mood.
-    if len(staged) < max_queries:
+    if not staged:
         staged.append(f"{primary_mood} {noun}")
 
     unique = list(dict.fromkeys(staged))
-    if request_round:
-        # Rotate lower-priority valid combinations without disturbing the
-        # observation-first leading query.
-        tail = unique[1:]
-        rng.shuffle(tail)
-        unique = unique[:1] + tail
-    return unique[: max(1, min(max_queries, MAX_QUERIES_PER_CATEGORY))]
+    selected_index = max(0, int(request_round)) % len(unique)
+    return [unique[selected_index]]
 
 
 def validate_product(
@@ -880,14 +918,13 @@ def recommend_furniture(
         observed,
         session_id,
         request_round,
-        max_queries=MAX_QUERIES_PER_CATEGORY - 1,
     )
     LOGGER.info("category=%s queries=%s", category, queries)
     candidates: list[dict[str, Any]] = []
     occurrence: Counter[str] = Counter()
     for query_index, query in enumerate(queries):
         try:
-            found = provider.search(query, display=DISPLAY_PER_QUERY, start=1)
+            found = provider.search(query, display=DISPLAY_PER_QUERY)
         except Exception as exc:
             LOGGER.warning("query_failed query=%r error=%s", query, exc)
             continue
@@ -900,55 +937,6 @@ def recommend_furniture(
             identity = str(item.get("productId") or item.get("link") or item.get("title") or "")
             occurrence[identity] += 1
             candidates.append(item)
-        if len({str(item.get("productId") or item.get("link")) for item in candidates}) >= TARGET_CANDIDATES:
-            break
-
-    unique_candidate_count = len({
-        str(item.get("productId") or item.get("link"))
-        for item in candidates
-    })
-    if (
-        unique_candidate_count < MIN_UNIQUE_CANDIDATES
-        and len(queries) < MAX_QUERIES_PER_CATEGORY
-    ):
-        primary_mood = max(
-            mood_scores,
-            key=lambda mood: float(mood_scores[mood]),
-            default=next(iter(STYLE_PROFILES)),
-        )
-        # Broaden the provider search without dropping the selected mood.
-        # A category-only fallback used to mix visually unrelated products
-        # into otherwise mood-specific results.
-        fallback_query = (
-            f"{CATEGORY_CONFIG[category]['query_terms'][0]} {primary_mood}"
-        )
-        queries.append(fallback_query)
-        try:
-            found = provider.search(
-                fallback_query,
-                display=DISPLAY_PER_QUERY,
-                start=1,
-            )
-            LOGGER.info("query=%r response_count=%d", fallback_query, len(found))
-            for rank, source_item in enumerate(found):
-                item = dict(source_item)
-                item["matched_query"] = fallback_query
-                item["_provider_rank"] = rank
-                item["_query_index"] = len(queries) - 1
-                identity = str(
-                    item.get("productId")
-                    or item.get("link")
-                    or item.get("title")
-                    or ""
-                )
-                occurrence[identity] += 1
-                candidates.append(item)
-        except Exception as exc:
-            LOGGER.warning(
-                "fallback_query_failed query=%r error=%s",
-                fallback_query,
-                exc,
-            )
 
     LOGGER.info("candidate_count=%d", len(candidates))
     reasons: Counter[str] = Counter()
@@ -1002,7 +990,10 @@ def recommend_furniture(
         item["_text_style_score"] = text_scores[index]
         item["_category_score"] = 1.0
         rank = int(item.get("_provider_rank") or 0)
-        item["_naver_rank_score"] = max(0.0, 1.0 - rank / max(DISPLAY_PER_QUERY, 1))
+        item["_provider_rank_score"] = max(
+            0.0,
+            1.0 - rank / max(DISPLAY_PER_QUERY, 1),
+        )
         image_score: float | None = None
         if (
             index in image_candidate_indexes
@@ -1022,7 +1013,7 @@ def recommend_furniture(
             final = (
                 0.60 * item["_text_style_score"]
                 + 0.25 * item["_category_score"]
-                + 0.15 * item["_naver_rank_score"]
+                + 0.15 * item["_provider_rank_score"]
             )
         else:
             image_used = True
@@ -1030,7 +1021,7 @@ def recommend_furniture(
                 0.40 * max(0.0, min(1.0, image_score))
                 + 0.30 * item["_text_style_score"]
                 + 0.20 * item["_category_score"]
-                + 0.10 * item["_naver_rank_score"]
+                + 0.10 * item["_provider_rank_score"]
             )
         identity = str(item.get("productId") or item.get("link") or item.get("title") or "")
         item["_final_score"] = min(1.0, final + min(occurrence[identity] - 1, 3) * 0.01)
