@@ -9,6 +9,7 @@ import math
 import os
 import random
 import re
+import threading
 import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
@@ -40,6 +41,16 @@ except ImportError:
 
 LOGGER = logging.getLogger("furniture-recommendation")
 LOGGER.setLevel(logging.INFO)
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_SERPAPI_CACHE_DIR = (
+    PROJECT_ROOT
+    / "frontend"
+    / "static"
+    / "generated"
+    / "product_cache"
+    / "serpapi_search_v1"
+)
 
 DISPLAY_PER_QUERY = 30
 #SerpApi 1회 응답에서 최대 30개 상품만 후보로 사용
@@ -182,6 +193,8 @@ class SerpApiShoppingProvider:
         *,
         timeout: float | None = None,
         retries: int | None = None,
+        cache_dir: str | Path | None = None,
+        cache_ttl_seconds: int | None = None,
     ) -> None:
         # Google Shopping 검색은 캐시되지 않은 질의에서 10초를 넘기는 일이
         # 잦다. 상품 1종마다 질의를 여러 번 돌리므로 10초/재시도 0회에서는
@@ -204,9 +217,92 @@ class SerpApiShoppingProvider:
         self.location = os.getenv("SERPAPI_LOCATION", "").strip()
         self.timeout = timeout
         self.retries = max(0, min(int(retries), 2))
+        configured_cache = str(
+            cache_dir
+            or os.getenv("SERPAPI_CACHE_DIR", "")
+        ).strip()
+        self.cache_dir = (
+            Path(configured_cache).expanduser()
+            if configured_cache
+            else DEFAULT_SERPAPI_CACHE_DIR
+        )
+        if not self.cache_dir.is_absolute():
+            self.cache_dir = PROJECT_ROOT / self.cache_dir
+        self.cache_ttl_seconds = (
+            max(0, int(cache_ttl_seconds))
+            if cache_ttl_seconds is not None
+            else _env_int("SERPAPI_CACHE_TTL_SECONDS", 6 * 60 * 60)
+        )
+        if self.cache_ttl_seconds > 0:
+            self.cache_dir.mkdir(parents=True, exist_ok=True)
         # prefetch()가 채워 두는 질의별 결과. 인스턴스는 요청마다 새로
         # 만들어지므로 요청 하나를 넘어 살아남지 않는다.
         self._prefetched: dict[tuple[str, int], list[dict[str, Any]]] = {}
+
+    def _cache_path(self, query: str, display: int) -> Path:
+        """검색 조건 전체를 포함한 재사용 가능한 캐시 파일 경로를 만든다."""
+        payload = json.dumps(
+            {
+                "version": 1,
+                "query": query,
+                "display": display,
+                "google_domain": self.google_domain,
+                "country": self.country,
+                "language": self.language,
+                "location": self.location,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        key = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:32]
+        return self.cache_dir / f"{key}.json"
+
+    def _load_cached(
+        self,
+        query: str,
+        display: int,
+    ) -> list[dict[str, Any]] | None:
+        """TTL 안의 정상 검색 결과가 있으면 반환한다."""
+        if self.cache_ttl_seconds <= 0:
+            return None
+        path = self._cache_path(query, display)
+        try:
+            age = time.time() - path.stat().st_mtime
+            if age > self.cache_ttl_seconds:
+                return None
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(payload, list):
+                return None
+            return [dict(item) for item in payload if isinstance(item, dict)]
+        except (OSError, ValueError, TypeError):
+            return None
+
+    def _save_cached(
+        self,
+        query: str,
+        display: int,
+        products: list[dict[str, Any]],
+    ) -> None:
+        """완료된 검색 결과를 원자적으로 저장한다."""
+        if self.cache_ttl_seconds <= 0:
+            return
+        path = self._cache_path(query, display)
+        temporary = path.with_suffix(
+            f".{os.getpid()}.{threading.get_ident()}.tmp"
+        )
+        try:
+            temporary.write_text(
+                json.dumps(products, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            temporary.replace(path)
+        except OSError as exc:
+            LOGGER.warning("serpapi_cache_write_failed path=%s error=%s", path, exc)
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     def prefetch(
         self,
@@ -264,7 +360,11 @@ class SerpApiShoppingProvider:
         query: str,
         display: int = DISPLAY_PER_QUERY,
     ) -> list[dict[str, Any]]:
-        """SerpApi를 검색하고 추천 로직이 사용하는 공통 필드로 정규화한다."""
+        """캐시를 확인한 뒤 SerpApi 결과를 공통 상품 형식으로 정규화한다."""
+        cached = self._load_cached(query, display)
+        if cached is not None:
+            LOGGER.info("serpapi_cache_hit query=%r count=%d", query, len(cached))
+            return cached
         if not self.api_key:
             raise ValueError(
                 "SERPAPI_API 또는 SERPAPI_API_KEY가 없습니다."
@@ -363,7 +463,9 @@ class SerpApiShoppingProvider:
                     }
                     for item in payload.get("shopping_results", [])
                 ]
-                return products[: max(1, min(int(display), 100))]
+                products = products[: max(1, min(int(display), 100))]
+                self._save_cached(query, display, products)
+                return products
             except (requests.RequestException, ValueError) as exc:
                 last_error = (
                     RuntimeError(

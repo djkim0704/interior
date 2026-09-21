@@ -81,11 +81,13 @@ OAuth 액세스 토큰이라 몇 시간 뒤 만료되며 `401 UNAUTHENTICATED`�
 
 ```ini
 GEMINI_LAYOUT_MODEL=gemini-3.1-flash-lite   # 1단계 배치 분석 (무료 RPD 500)
-GEMINI_SVG_MODEL=gemini-3.6-flash           # 2단계 평면도 SVG (무료 RPD 20)
+GEMINI_SVG_MODEL=gemini-3.5-flash-lite      # 2단계 평면도 SVG
 FLOORPLAN_CACHE=1                           # 평면도 캐시 (30분 TTL)
 ENABLE_GEMINI_SVG_RENDER=true               # /preview-3d 의 AI 입체 SVG
-GEMINI_ROOM_SVG_MODEL=gemini-3.1-flash-lite # 입체 SVG 전용 (RPD 500)
+GEMINI_ROOM_SVG_MODEL=gemini-3.5-flash-lite # 입체 SVG 우선 모델
+GEMINI_ROOM_SVG_FALLBACK_MODELS=gemini-3.1-flash-lite,gemini-2.5-flash-lite
 GEMINI_FURNITURE_PARTS_MODEL=               # three.js 가구 형태 설계도 (7.9)
+SERPAPI_CACHE_TTL_SECONDS=21600             # 상품 검색 결과 6시간 재사용
 ```
 
 > `GEMINI_ROOM_SVG_MODEL` 에 `-lite` 계열을 두면 입체 SVG 가 원근도 그림자도
@@ -255,7 +257,9 @@ response = client.models.generate_content(...)
 
 캐시 안 된 검색이 **중앙값 12초**다(10초를 넘기는 게 정상). 그래서
 `SERPAPI_TIMEOUT=30`이고, 가구 종류별 검색은 `provider.prefetch()`로
-병렬 조회한다. 순차로 돌리면 13종에 2분 30초가 걸린다.
+병렬 조회한다. 순차로 돌리면 13종에 2분 30초가 걸린다. 성공한 검색 결과는
+기본 6시간 동안 디스크에도 저장하므로 같은 검색어는 서버를 재시작해도 즉시
+재사용한다. `SERPAPI_CACHE_TTL_SECONDS=0`이면 이 디스크 캐시를 끈다.
 
 무료 플랜은 **월 250회**다.
 

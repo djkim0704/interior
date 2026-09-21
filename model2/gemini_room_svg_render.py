@@ -17,18 +17,49 @@ from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 
-from .gemini_retry import call_with_retry
+from .gemini_retry import GeminiBusyError, call_with_retry
 from PIL import Image, ImageDraw, ImageOps
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MODEL = "gemini-3.6-flash"
-PROMPT_VERSION = "room-perspective-svg-v1"
+PROMPT_VERSION = "room-perspective-svg-v2"
 MAX_PRODUCT_IMAGES = 8
 MAX_DOWNLOAD_BYTES = 12 * 1024 * 1024
 FAILURE_COOLDOWN_SECONDS = 10 * 60
 SVG_NS = "http://www.w3.org/2000/svg"
 _GENERATION_LOCK = threading.Lock()
+
+# Gemini가 종종 안전한 SVG 표현 속성을 ``style="fill:..."`` 형태로
+# 묶어서 반환한다. 스타일 전체를 허용하면 CSS 주입 표면이 커지고, 전부
+# 거부하면 정상 결과까지 폐기된다. 필요한 표현 속성만 개별 SVG 속성으로
+# 풀어 쓴 뒤 style 자체는 제거한다.
+SAFE_STYLE_PROPERTIES = frozenset({
+    "clip-path",
+    "color",
+    "color-interpolation-filters",
+    "fill",
+    "fill-opacity",
+    "fill-rule",
+    "filter",
+    "flood-color",
+    "flood-opacity",
+    "isolation",
+    "mask",
+    "mix-blend-mode",
+    "opacity",
+    "stop-color",
+    "stop-opacity",
+    "stroke",
+    "stroke-dasharray",
+    "stroke-dashoffset",
+    "stroke-linecap",
+    "stroke-linejoin",
+    "stroke-miterlimit",
+    "stroke-opacity",
+    "stroke-width",
+    "visibility",
+})
 
 ET.register_namespace("", SVG_NS)
 
@@ -44,8 +75,22 @@ def _client() -> genai.Client:
         http_options=types.HttpOptions(
             client_args={"trust_env": False},
             async_client_args={"trust_env": False},
+            # 이 렌더는 아래에서 모델별 재시도와 폴백을 직접 관리한다.
+            # SDK 기본 5회 재시도까지 겹치면 한 모델의 503에 수 분을 쓴다.
+            retry_options=types.HttpRetryOptions(attempts=1),
         ),
     )
+
+
+def _room_svg_models(primary: str) -> list[str]:
+    """우선 모델과 503/429 시 사용할 대체 모델 목록을 만든다."""
+    configured = os.getenv(
+        "GEMINI_ROOM_SVG_FALLBACK_MODELS",
+        "gemini-3.1-flash-lite,gemini-2.5-flash-lite",
+    )
+    candidates = [primary]
+    candidates.extend(item.strip() for item in configured.split(","))
+    return list(dict.fromkeys(item for item in candidates if item))
 
 
 def _file_digest(path: Path) -> str:
@@ -201,6 +246,45 @@ def _extract_svg(text: str) -> str:
     return text[start : end + len("</svg>")]
 
 
+def _safe_style_value(value: str) -> bool:
+    """외부 리소스나 실행 가능한 CSS가 없는 표현 값인지 확인한다."""
+    lowered = value.lower().replace(" ", "")
+    if any(
+        marker in lowered
+        for marker in (
+            "javascript:",
+            "data:",
+            "http:",
+            "https:",
+            "@import",
+            "expression(",
+        )
+    ):
+        return False
+    return all(
+        reference.strip("'\"").startswith("#")
+        for reference in re.findall(r"url\(([^)]+)\)", lowered)
+    )
+
+
+def _expand_safe_inline_style(element: ET.Element) -> None:
+    """허용한 inline style 선언만 SVG 표현 속성으로 변환한다."""
+    raw_style = element.attrib.pop("style", "")
+    for declaration in raw_style.split(";"):
+        if ":" not in declaration:
+            continue
+        name, value = declaration.split(":", 1)
+        name = name.strip().lower()
+        value = value.strip()
+        if (
+            name not in SAFE_STYLE_PROPERTIES
+            or not value
+            or not _safe_style_value(value)
+        ):
+            continue
+        element.attrib.setdefault(name, value)
+
+
 def _sanitize_svg(svg_text: str) -> str:
     """스크립트·외부 리소스를 차단하고 허용한 벡터 요소만 남긴다."""
     if len(svg_text.encode("utf-8")) > 2 * 1024 * 1024:
@@ -231,10 +315,11 @@ def _sanitize_svg(svg_text: str) -> str:
         tag = element.tag.rsplit("}", 1)[-1]
         if tag not in allowed_tags:
             raise ValueError(f"허용하지 않는 SVG 요소입니다: {tag}")
+        _expand_safe_inline_style(element)
         for attribute, value in element.attrib.items():
             name = attribute.rsplit("}", 1)[-1].lower()
             lowered = str(value).lower().replace(" ", "")
-            if name.startswith("on") or name in {"href", "style"}:
+            if name.startswith("on") or name == "href":
                 raise ValueError(f"허용하지 않는 SVG 속성입니다: {name}")
             if any(marker in lowered for marker in ("javascript:", "data:", "http:", "https:")):
                 raise ValueError("SVG 외부 리소스 참조는 허용하지 않습니다.")
@@ -324,8 +409,9 @@ illustration with substantially more material detail than simple flat boxes.
 
 Do not add, remove, duplicate, resize, or move major furniture. Do not include
 labels, measurements, UI, people, watermarks, raster images, base64 data, scripts,
-stylesheets, foreignObject, or external URLs. Use only self-contained SVG vector
-elements and internal defs referenced as url(#id).
+stylesheets, style attributes, foreignObject, or external URLs. Use SVG
+presentation attributes such as fill, stroke, opacity, and filter instead. Use
+only self-contained SVG vector elements and internal defs referenced as url(#id).
 
 Room: {float(room.get('width_m') or 0):.2f}m x
 {float(room.get('depth_m') or 0):.2f}m, ceiling
@@ -352,6 +438,8 @@ def generate_room_svg(
     캐시가 없을 때만 API를 한 번 호출한다. 실패한 동일 조합은 짧은 시간 동안
     재호출하지 않으며, 호출부는 기존 Three.js 화면으로 대체할 수 있다.
     """
+    # Flask 경유뿐 아니라 모듈을 단독 실행해도 전용 모델 설정을 먼저 읽는다.
+    load_dotenv(PROJECT_ROOT / ".env")
     original_image = Path(original_image).resolve()
     if not original_image.is_file():
         raise FileNotFoundError("원본 방 사진을 찾을 수 없습니다.")
@@ -422,20 +510,55 @@ def generate_room_svg(
             # 쓰면 .models를 꺼낸 순간 Client의 참조가 사라져 GC가 수거하고,
             # 그때 내부 HTTP 커넥션이 닫혀 "client has been closed"로 실패한다.
             client = _client()
-            response = call_with_retry(
-                client.models.generate_content,
-                model=model,
-                contents=contents,
-                config=types.GenerateContentConfig(
-                    response_mime_type="text/plain",
-                    temperature=0.2,
-                    max_output_tokens=24000,
-                ),
-                description="입체 렌더 SVG 생성",
-            )
-            if not response.text:
-                raise RuntimeError("Gemini가 입체 렌더 SVG를 반환하지 않았습니다.")
-            svg_text = _sanitize_svg(_extract_svg(str(response.text)))
+            svg_text = None
+            failures: list[str] = []
+            for candidate_model in _room_svg_models(model):
+                try:
+                    response = call_with_retry(
+                        client.models.generate_content,
+                        model=candidate_model,
+                        contents=contents,
+                        config=types.GenerateContentConfig(
+                            response_mime_type="text/plain",
+                            temperature=0.2,
+                            max_output_tokens=16000,
+                        ),
+                        description=(
+                            f"입체 렌더 SVG 생성({candidate_model})"
+                        ),
+                        # 같은 모델만 오래 두드리지 않고 한 번 재시도한 뒤
+                        # 용량이 다른 안정 모델로 전환한다.
+                        retry_attempts=2,
+                        retry_base_delay=5.0,
+                        retry_max_total_wait=15.0,
+                    )
+                    if not response.text:
+                        raise RuntimeError(
+                            "Gemini가 입체 렌더 SVG를 반환하지 않았습니다."
+                        )
+                    svg_text = _sanitize_svg(
+                        _extract_svg(str(response.text))
+                    )
+                    break
+                except (
+                    GeminiBusyError,
+                    RuntimeError,
+                    ValueError,
+                    ET.ParseError,
+                ) as model_exc:
+                    failures.append(
+                        f"{candidate_model}: "
+                        f"{type(model_exc).__name__}: {model_exc}"
+                    )
+                    print(
+                        "[gemini-room-svg] "
+                        f"{candidate_model} 실패, 대체 모델 확인: {model_exc}"
+                    )
+
+            if svg_text is None:
+                raise RuntimeError(
+                    "모든 입체 SVG 모델이 실패했습니다. " + " | ".join(failures)
+                )
             temporary_path = output_path.with_suffix(".tmp")
             temporary_path.write_text(svg_text, encoding="utf-8")
             temporary_path.replace(output_path)
