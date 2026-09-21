@@ -1,0 +1,22 @@
+{
+  "id": "minimal_white_c02",
+  "mood_id": "minimal_white",
+  "cluster_id": 2,
+  "name_ko": "미니멀 화이트",
+  "name_en": "minimal white scandinavian room",
+  "tags": [
+    "minimal",
+    "white"
+  ],
+  "typical_elements": [],
+  "avoid_elements": [],
+  "gallery_count": 191,
+  "color_palette": [
+    "#c0c7c5",
+    "#432f28",
+    "#a9a8a2",
+    "#928d88",
+    "#71594e"
+  ],
+  "confidence": 0.3036780059337616
+}

@@ -1,0 +1,22 @@
+{
+  "id": "natural_wood_c07",
+  "mood_id": "natural_wood",
+  "cluster_id": 7,
+  "name_ko": "내추럴 우드",
+  "name_en": "natural wood tone small room",
+  "tags": [
+    "natural",
+    "wood"
+  ],
+  "typical_elements": [],
+  "avoid_elements": [],
+  "gallery_count": 30,
+  "color_palette": [
+    "#b9babe",
+    "#6f6360",
+    "#9b9798",
+    "#302e29",
+    "#dbd9dd"
+  ],
+  "confidence": 0.28404974937438965
+}

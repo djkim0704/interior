@@ -1,0 +1,22 @@
+{
+  "id": "plant_green_c04",
+  "mood_id": "plant_green",
+  "cluster_id": 4,
+  "name_ko": "플랜트 그린",
+  "name_en": "plant-filled green interior",
+  "tags": [
+    "plant",
+    "green"
+  ],
+  "typical_elements": [],
+  "avoid_elements": [],
+  "gallery_count": 101,
+  "color_palette": [
+    "#5d3b29",
+    "#dbc6aa",
+    "#2a1910",
+    "#967459",
+    "#1d7366"
+  ],
+  "confidence": 0.29358768463134766
+}

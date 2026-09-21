@@ -1,0 +1,22 @@
+{
+  "id": "monochrome_minimal_c06",
+  "mood_id": "monochrome_minimal",
+  "cluster_id": 6,
+  "name_ko": "모노톤 미니멀",
+  "name_en": "monochrome minimalist interior",
+  "tags": [
+    "monochrome",
+    "minimal"
+  ],
+  "typical_elements": [],
+  "avoid_elements": [],
+  "gallery_count": 229,
+  "color_palette": [
+    "#ceccc1",
+    "#5e4c38",
+    "#aea290",
+    "#12110e",
+    "#897761"
+  ],
+  "confidence": 0.3017459511756897
+}

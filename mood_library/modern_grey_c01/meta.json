@@ -1,0 +1,22 @@
+{
+  "id": "modern_grey_c01",
+  "mood_id": "modern_grey",
+  "cluster_id": 1,
+  "name_ko": "모던 그레이",
+  "name_en": "modern grey industrial studio",
+  "tags": [
+    "modern",
+    "grey"
+  ],
+  "typical_elements": [],
+  "avoid_elements": [],
+  "gallery_count": 221,
+  "color_palette": [
+    "#89857d",
+    "#dde8ed",
+    "#6d6053",
+    "#b2b6b4",
+    "#1e1613"
+  ],
+  "confidence": 0.2728738784790039
+}

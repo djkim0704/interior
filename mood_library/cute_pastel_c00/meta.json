@@ -1,0 +1,22 @@
+{
+  "id": "cute_pastel_c00",
+  "mood_id": "cute_pastel",
+  "cluster_id": 0,
+  "name_ko": "파스텔 귀여운",
+  "name_en": "cute pastel room decor",
+  "tags": [
+    "cute",
+    "pastel"
+  ],
+  "typical_elements": [],
+  "avoid_elements": [],
+  "gallery_count": 82,
+  "color_palette": [
+    "#e4dfde",
+    "#e6c181",
+    "#ddc1b4",
+    "#bf9c8e",
+    "#95734b"
+  ],
+  "confidence": 0.34206917881965637
+}

@@ -1,0 +1,22 @@
+{
+  "id": "vintage_retro_c08",
+  "mood_id": "vintage_retro",
+  "cluster_id": 8,
+  "name_ko": "빈티지 레트로",
+  "name_en": "vintage retro small room",
+  "tags": [
+    "vintage",
+    "retro"
+  ],
+  "typical_elements": [],
+  "avoid_elements": [],
+  "gallery_count": 151,
+  "color_palette": [
+    "#ab8f79",
+    "#dfdddc",
+    "#362410",
+    "#bfb3ac",
+    "#7c5a3f"
+  ],
+  "confidence": 0.3195610046386719
+}

@@ -24,7 +24,7 @@ from PIL import Image
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "model2" / "output" / "gemini_svg_experiment"
-DEFAULT_MODEL = "gemini-3.6-flash"
+DEFAULT_MODEL = "gemini-2.5-flash"
 
 SVG_PROMPT = """
 You are an expert interior illustrator and SVG artist.
@@ -165,6 +165,21 @@ def _safe_stem(path: Path) -> str:
     return re.sub(r"[^0-9A-Za-z가-힣_-]+", "_", path.stem).strip("_") or "room"
 
 
+def _ensure_not_truncated(response: object) -> None:
+    """토큰 한도로 잘린 응답을 내용 오류로 오인하지 않게 먼저 걸러낸다."""
+    candidates = getattr(response, "candidates", None) or []
+    if not candidates:
+        return
+    if str(getattr(candidates[0], "finish_reason", "")).endswith("MAX_TOKENS"):
+        usage = getattr(response, "usage_metadata", None)
+        thoughts = getattr(usage, "thoughts_token_count", None) or 0
+        raise RuntimeError(
+            "Gemini 응답이 토큰 한도에 걸려 잘렸습니다"
+            f"(thinking {thoughts} 토큰 소비). "
+            "max_output_tokens를 늘리거나 thinking_budget=0으로 두세요."
+        )
+
+
 def generate_svg_text(
     client: genai.Client,
     image_path: Path,
@@ -185,10 +200,14 @@ def generate_svg_text(
             response_mime_type="text/plain",
             temperature=0.2,
             max_output_tokens=20000,
+            # thinking 토큰이 max_output_tokens를 함께 쓰므로 SVG가 잘릴 수 있다.
+            # 배치 JSON이 이미 주어진 상태의 변환 작업이라 thinking을 끈다.
+            thinking_config=types.ThinkingConfig(thinking_budget=0),
         ),
     )
     if not response.text:
         raise RuntimeError("Gemini가 SVG 텍스트를 반환하지 않았습니다.")
+    _ensure_not_truncated(response)
     return _extract_svg(response.text), response.text
 
 

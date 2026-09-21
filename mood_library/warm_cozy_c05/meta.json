@@ -1,0 +1,22 @@
+{
+  "id": "warm_cozy_c05",
+  "mood_id": "warm_cozy",
+  "cluster_id": 5,
+  "name_ko": "따뜻한 코지 원룸",
+  "name_en": "warm cozy studio apartment interior",
+  "tags": [
+    "warm",
+    "cozy"
+  ],
+  "typical_elements": [],
+  "avoid_elements": [],
+  "gallery_count": 27,
+  "color_palette": [
+    "#62564b",
+    "#c5c4bf",
+    "#979087",
+    "#1f1a15",
+    "#e2e5e4"
+  ],
+  "confidence": 0.2912117838859558
+}

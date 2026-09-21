@@ -160,26 +160,5 @@ python -m model1.cli --help                 # 평면도 생성 (구: model1/inte
 python model2/run_gemini_features.py --help # 무드 특징 추출
 python model2/topdown_experiment/run.py room.jpg   # 방 구조 분석 실험
 
-# 4) 테스트 (루트에서 — 루트가 import 경로에 있어야 함)
 python -m pytest tests
-```
 
-## 알려진 부채
-
-- **`model2/notebooks/06_gemini_features.ipynb`는 실행 불가.** 존재하지 않는
-  `mood_pipeline/prompt_floorplan.py`와 존재하지 않는 함수 3개
-  (`resolve_recommended_image`, `render_rule_based_floorplan`, `plot_rule_based_floorplan`),
-  존재하지 않는 `requirements-ml.txt`·`requirements-gemini.txt`를 참조합니다.
-  import 경로만 고쳐서는 살아나지 않고 셀을 새로 써야 합니다.
-- **`backend/app.py`가 CRLF/LF 혼용**입니다(CRLF 약 2,990줄 + LF 약 2,140줄).
-  줄바꿈을 통일하면 diff가 파일 전체로 번지므로 별도 커밋에서 처리하는 편이 좋습니다.
-- **`tests/test_floorplan_edit.py`·`test_product_visual_profiles.py`에 sys.path 설정이 없습니다.**
-  루트를 import 경로에 두고 실행해야 합니다(`python -m pytest tests` 또는 `PYTHONPATH=.`).
-  `tests/test_product_recommendation.py`만 자체적으로 `sys.path.insert`를 합니다.
-- **`mood_search_v1/build_library.py`·`cluster.py`·`label.py`는 런타임에서 호출되지 않습니다.**
-  `data/`·`mood_library/` 산출물을 다시 만들 때만 쓰는 오프라인 스크립트로 남겨둔 것입니다.
-- **`data/`와 `mood_library/`는 gitignore 대상**(각각 약 17MB, 207MB)입니다. 다른 머신에서
-  `/mood-search`를 쓰려면 위 오프라인 스크립트로 재생성해야 합니다.
-- **`frontend/static/generated/`에 런타임 캐시가 약 354MB** 쌓여 있습니다(그중
-  `product_cache/clip_product_embeddings/`가 270MB). 전부 재생성 가능하지만 지우면
-  CLIP 임베딩을 다시 계산합니다. 용량이 필요할 때만 비우세요.

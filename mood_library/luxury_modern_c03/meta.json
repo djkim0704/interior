@@ -1,0 +1,22 @@
+{
+  "id": "luxury_modern_c03",
+  "mood_id": "luxury_modern",
+  "cluster_id": 3,
+  "name_ko": "럭셔리 모던",
+  "name_en": "luxury modern studio apartment",
+  "tags": [
+    "luxury",
+    "modern"
+  ],
+  "typical_elements": [],
+  "avoid_elements": [],
+  "gallery_count": 154,
+  "color_palette": [
+    "#817061",
+    "#deeaed",
+    "#31241a",
+    "#665140",
+    "#a89f97"
+  ],
+  "confidence": 0.2936480641365051
+}
