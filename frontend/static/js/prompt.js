@@ -297,12 +297,16 @@
         return;
       }
 
-      button.classList.toggle("active");
+      // 태그는 분위기를 하나로 좁히는 장치라 여러 개가 동시에 켜지면
+      // 검색어가 서로 상쇄된다. 하나만 남기고 나머지는 해제한다.
+      const wasActive = activeTags.has(tag);
 
-      if (activeTags.has(tag)) {
-        activeTags.delete(tag);
-        removeTagFromInput(tag);
-      } else {
+      activeTags.forEach((activeTag) => removeTagFromInput(activeTag));
+      activeTags.clear();
+      tagButtons.forEach((other) => other.classList.remove("active"));
+
+      if (!wasActive) {
+        button.classList.add("active");
         activeTags.add(tag);
 
         const inputParts = textarea.value

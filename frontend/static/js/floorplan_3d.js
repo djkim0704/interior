@@ -420,6 +420,35 @@ const BUILDERS = {
   },
 };
 
+// Gemini 가 준 부품 설계도로 가구를 세운다. 좌표는 가구 치수에 대한 비율이라
+// 여기서 미터로 환산한다. (규약은 gemini_furniture_parts.py 의 docstring)
+// 손으로 짠 BUILDERS 보다 형태가 나을 때만 쓰이고, 설계도가 없으면 호출되지 않는다.
+function buildFromParts(obj, parts) {
+  const { w_m: w, d_m: d, height_m: h, color } = obj;
+  const g = new THREE.Group();
+
+  parts.forEach((part) => {
+    const tone = typeof part.tone === "number" ? part.tone : 1;
+    const mat = material(color, tone);
+    const x = (part.x || 0) * w;
+    const y = (part.y || 0) * h;
+    const z = (part.z || 0) * d;
+
+    if (part.shape === "cylinder") {
+      // 반지름은 짧은 쪽 변에 걸어야 가구 밖으로 삐져나오지 않는다
+      const r = (part.r || 0.05) * Math.min(w, d);
+      g.add(cylinder(r, (part.h || 0.1) * h, mat, x, y, z));
+      return;
+    }
+
+    g.add(
+      box((part.w || 0.1) * w, (part.h || 0.1) * h, (part.d || 0.1) * d, mat, x, y, z)
+    );
+  });
+
+  return g;
+}
+
 // ── 라벨 (캔버스 텍스처 스프라이트) ─────────────────────────
 // CSS2DRenderer 대신 스프라이트를 쓴다. 오버레이 DOM 없이 한글이 선명하게 나온다.
 function makeLabel(text, { accent = false } = {}) {
@@ -575,10 +604,15 @@ class Floorplan3D {
     this.labelGroup = new THREE.Group();
 
     this.data.objects.forEach((obj) => {
+      // 설계도가 있으면 그것으로, 없으면 손으로 짠 빌더로 세운다.
+      // 설계도는 Gemini 호출이라 없을 수 있어서 항상 빌더가 뒤를 받친다.
+      const recipe = (this.data.furniture_parts || {})[obj.type];
       const build = BUILDERS[obj.type] || BUILDERS.unknown;
       let node;
       try {
-        node = build(obj);
+        node = recipe && recipe.parts && recipe.parts.length
+          ? buildFromParts(obj, recipe.parts)
+          : build(obj);
       } catch (error) {
         console.warn("[floorplan-3d] 가구 생성 실패, 기본 도형으로 대체:", obj.type, error);
         node = BUILDERS.unknown(obj);
