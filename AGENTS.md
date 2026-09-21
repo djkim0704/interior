@@ -25,7 +25,20 @@ AI 코딩 에이전트(Codex, Claude Code 등)가 이 저장소를 clone한 직�
 
 ## 2. 설치
 
-Python **3.12** 기준이다. 저장소 루트(이 파일이 있는 디렉터리)에서:
+Python **3.12** 기준이다.
+
+먼저 3.12가 있는지 본다. 최신 Python(3.13+)만 깔려 있으면 torch/ultralytics
+휠이 아직 안 올라와 설치가 깨진다. 시스템 Python을 건드리지 않고 3.12만
+따로 받으려면 [uv](https://docs.astral.sh/uv/)가 편하다.
+
+```bash
+py --list                  # Windows: 설치된 버전 확인
+uv python install 3.12     # 없으면 uv 관리 디렉터리에 받는다(전역 PATH 영향 없음)
+uv venv venv --python 3.12
+uv pip install --python venv/Scripts/python.exe -r requirements.txt   # Windows
+```
+
+uv 없이 갈 거면 3.12를 직접 설치한 뒤 저장소 루트(이 파일이 있는 디렉터리)에서:
 
 ```bash
 # Windows
@@ -71,6 +84,7 @@ GEMINI_LAYOUT_MODEL=gemini-3.1-flash-lite   # 1단계 배치 분석 (무료 RPD 
 GEMINI_SVG_MODEL=gemini-3.6-flash           # 2단계 평면도 SVG (무료 RPD 20)
 FLOORPLAN_CACHE=1                           # 평면도 캐시 (30분 TTL)
 ENABLE_GEMINI_SVG_RENDER=true               # /preview-3d 의 AI 입체 SVG
+GEMINI_ROOM_SVG_MODEL=gemini-3.1-flash-lite # 입체 SVG 전용 (RPD 500)
 ```
 
 > **주의** `.env`는 Flask 자동 리로더의 감시 대상이 아니다. 값을 바꾸면
@@ -103,6 +117,31 @@ http://127.0.0.1:5000 에서 열린다. `debug=True`라 `.py` 수정은 자동 �
 | `data/` | 17MB | `mood_search_v1`의 embedding → clustering → labeling |
 | `mood_library/` | 210MB | `mood_search_v1.run_build_library` |
 | `frontend/static/generated/` | 런타임 | 앱이 실행하며 자동 생성 |
+
+### 무드 라이브러리는 이미지만 채운다고 생기지 않는다
+
+`images/final/`에 사진을 넣어도 `/mood-search`는 계속 500을 뱉는다. 검색이
+읽는 건 원본이 아니라 `mood_library/index.json`이고, 그건 파이프라인을
+돌려야 만들어진다. 폴더가 없어서가 아니라 **내용물이 없어서** 나는 오류라
+빈 폴더를 만들어도 해결되지 않는다.
+
+```
+images/final/  →  run_embedding()   →  data/
+               →  run_clustering()
+               →  run_labeling()
+               →  run_build_library()  →  mood_library/
+```
+
+`backend/app.py`가 기동할 때 `index.json`이 없으면 이 네 단계를 자동으로
+돌린다. 그래서 보통은 서버를 한 번 띄우면 끝이고, 첫 기동만 오래 걸린다.
+
+- **네 단계 모두 로컬 CLIP만 쓴다. Gemini 호출 0회**라 RPD와 무관하다
+- 이미지 1265장 기준 **CPU로 약 4.4분**(GPU 불필요)
+- `mood_library/`는 이미지를 복사하므로 디스크가 원본 크기만큼 더 필요하다
+- `images/final/`이 비어 있으면 건너뛰고 안내만 남긴다. 무드 검색만 죽고
+  평면도·상품 추천은 정상 동작한다
+- 이미지를 더 넣어도 자동 재빌드되지 않는다. 갱신하려면 `mood_library/`를
+  지우고 다시 띄운다
 
 ---
 
@@ -169,7 +208,28 @@ frontend/templates/, static/      Jinja 템플릿과 정적 파일
 되는지 확인해야 한다. 1단계(`GEMINI_LAYOUT_MODEL`)는 `normalize_layout`이
 빠진 값을 메워주므로 가벼운 모델로 바꿔도 비교적 안전하다.
 
-### 7.3 Gemini 클라이언트는 변수에 담아야 한다
+### 7.3 /preview-3d 의 "3D"는 두 가지다
+
+`/preview-3d`에는 성격이 다른 두 화면이 있다.
+
+| | 만드는 주체 | 실패하면 |
+|---|---|---|
+| **3D 배치 화면** | 로컬 three.js (`floorplan_3d.py` → `scene.json`) | — |
+| **AI 입체 SVG** | Gemini (`gemini_room_svg_render.py`) | 위 화면으로 대체 |
+
+three.js 씬은 **Gemini가 만들지 않는다.** 배치 JSON에서 결정론적으로
+계산하므로 좌표·치수가 정확하고 API 한도와 무관하게 항상 동작한다.
+
+> AI 입체 SVG를 만들지 못해 정확한 3D 배치 화면으로 대신합니다.
+
+이 안내가 뜨는 건 **장식용 일러스트 한 장만 실패한 것**이고 3D 자체는
+정상이다. 기능 고장으로 오해하기 쉽다. 실패 사유는 서버 콘솔의
+`[gemini-room-svg] 생성 실패:` 줄과 `.failed` 파일에 남는다.
+
+입체 SVG가 필요 없으면 `ENABLE_GEMINI_SVG_RENDER=false`로 끈다. 안내 문구도
+사라지고 RPD도 아낀다.
+
+### 7.4 Gemini 클라이언트는 변수에 담아야 한다
 
 ```python
 # 안 된다 — Client가 임시객체라 GC가 수거하며 커넥션을 닫는다
@@ -181,7 +241,7 @@ client = _client()
 response = client.models.generate_content(...)
 ```
 
-### 7.4 SerpApi는 느리다
+### 7.5 SerpApi는 느리다
 
 캐시 안 된 검색이 **중앙값 12초**다(10초를 넘기는 게 정상). 그래서
 `SERPAPI_TIMEOUT=30`이고, 가구 종류별 검색은 `provider.prefetch()`로
@@ -189,7 +249,23 @@ response = client.models.generate_content(...)
 
 무료 플랜은 **월 250회**다.
 
-### 7.5 세션·캐시 때문에 코드 수정이 안 보일 수 있다
+### 7.6 문법 오류를 저장하면 서버가 죽고, 고쳐도 안 살아난다
+
+`debug=True`라 `.py`를 저장하면 리로더가 바로 읽는다. 그 순간 파일이
+`SyntaxError` 상태면 리로더가 프로세스째 종료한다. 문제는 **그 뒤 코드를
+고쳐도 서버가 스스로 돌아오지 않는다**는 것이다. 감시하던 프로세스가 이미
+죽었기 때문이다.
+
+브라우저에 `ERR_CONNECTION_REFUSED`가 뜨면 코드 버그를 의심하기 전에 서버가
+살아 있는지부터 본다.
+
+```bash
+venv\Scripts\python.exe -m py_compile backend/app.py   # 저장 직후 확인
+```
+
+편집 후 `py_compile`로 검증하는 습관을 들이면 이 상황을 대부분 피한다.
+
+### 7.7 세션·캐시 때문에 코드 수정이 안 보일 수 있다
 
 | | 대처 |
 |---|---|
@@ -197,7 +273,7 @@ response = client.models.generate_content(...)
 | 평면도 캐시 | `frontend/static/generated/`의 해당 파일 삭제 (또는 30분 대기) |
 | 렌더 실패 쿨다운 | `gemini_room_svg_v1/`의 `.failed` 파일 삭제 |
 
-### 7.6 현재 임시로 건너뛴 단계가 있다
+### 7.8 현재 임시로 건너뛴 단계가 있다
 
 `/furniture-choice`와 `/product-selection`은 지금 `/result`로 리다이렉트만
 한다. 원래 코드는 그 아래에 그대로 살아 있고, 각 함수 맨 위의 `return` 두
