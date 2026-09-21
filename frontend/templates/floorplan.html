@@ -20,13 +20,71 @@
     line-height: 1.7;
   }
 
+  /* 3D 뷰어는 2D 박스와 같은 높이를 써서 토글 시 레이아웃이 튀지 않게 한다 */
+  #floorplan3dBox {
+    height: min(70vh, 640px);
+    min-height: 380px;
+    border-radius: 4px;
+    overflow: hidden;
+    background: #e8e4dc;
+    cursor: grab;
+  }
+
+  #floorplan3dBox:active {
+    cursor: grabbing;
+  }
+
+  #floorplan3dControls .btn.active {
+    background: #212529;
+    color: #fff;
+  }
+
 </style>
 
 <div class="container">
   <div class="row g-4">
 
     <div class="col-12">
-      <h5 class="mb-3">AI가 생성한 평면도</h5>
+      <div class="d-flex justify-content-between align-items-center mb-3">
+        <h5 class="mb-0">AI가 생성한 평면도</h5>
+
+        <button
+          id="floorplanViewToggle"
+          type="button"
+          class="btn btn-sm btn-outline-dark rounded-pill px-3"
+          {% if not scene_3d %}disabled{% endif %}
+        >
+          3D로 보기
+        </button>
+      </div>
+
+      <div
+        id="floorplan3dControls"
+        class="d-none btn-group btn-group-sm mb-2"
+        role="group"
+        aria-label="3D 시점"
+      >
+        <button type="button" class="btn btn-outline-secondary active" data-view-preset="iso">
+          입체
+        </button>
+        <button type="button" class="btn btn-outline-secondary" data-view-preset="top">
+          위에서
+        </button>
+        <button type="button" class="btn btn-outline-secondary" data-view-preset="eye">
+          눈높이
+        </button>
+        <button type="button" class="btn btn-outline-secondary active" id="floorplan3dLabels">
+          이름 숨기기
+        </button>
+      </div>
+
+      <div id="floorplan3dBox" class="d-none border mb-3"></div>
+
+      <p
+        id="floorplan3dStatus"
+        class="small text-muted mb-2"
+        aria-live="polite"
+      ></p>
 
       <div
         id="editableFloorplanBox"
@@ -101,4 +159,25 @@
   src="{{ url_for('static', filename='js/floorplan_edit.js', v='20260730-rebind-fix') }}"
   data-save-url="{{ url_for('save_floorplan_edit') }}"
 ></script>
+
+{% if scene_3d %}
+  {# 3D 씬 데이터 — Gemini 재호출 없이 평면도 layout 을 미터 단위로 환산한 결과 #}
+  <script type="application/json" id="floorplan3dScene">
+    {{ scene_3d | tojson }}
+  </script>
+
+  {# three.js 는 bare specifier 로 import 하므로 importmap 이 모듈 로드보다 먼저 와야 한다 #}
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+      }
+    }
+  </script>
+  <script
+    type="module"
+    src="{{ url_for('static', filename='js/floorplan_3d.js', v='20260730-3d-view') }}"
+  ></script>
+{% endif %}
 {% endblock %}

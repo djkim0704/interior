@@ -1,0 +1,205 @@
+{% extends "layout.html" %}
+
+{% block title %}결 - AI 입체 인테리어 SVG{% endblock %}
+
+{% block content %}
+<style>
+  /* 3D 전용 화면이라 뷰포트를 최대한 쓴다 */
+  #floorplan3dBox {
+    height: min(76vh, 760px);
+    min-height: 420px;
+    border-radius: 6px;
+    overflow: hidden;
+    background: #e8e4dc;
+    cursor: grab;
+  }
+
+  #floorplan3dBox:active {
+    cursor: grabbing;
+  }
+
+  #floorplan3dControls .btn.active {
+    background: #212529;
+    color: #fff;
+  }
+
+  .preview-3d-hint {
+    line-height: 1.7;
+  }
+
+  .preview-3d-empty {
+    max-width: 460px;
+    line-height: 1.7;
+  }
+
+  .svg-render-frame {
+    overflow: hidden;
+    border-radius: 8px;
+    background: #e8e4dc;
+  }
+
+  .svg-render-image {
+    display: block;
+    width: 100%;
+    max-height: min(76vh, 760px);
+    object-fit: contain;
+  }
+</style>
+
+<div class="container">
+
+  <div class="mb-4">
+    <p class="text-muted small mb-2">
+      STEP 6
+    </p>
+
+    <h3 class="mb-2">
+      완성된 공간을 입체 일러스트로 확인해 보세요
+    </h3>
+
+    <p class="text-muted mb-0">
+      {% if layout_source == "modified" %}
+        가구 유지·제거와 구매 선택이 반영된 최종 배치입니다.
+      {% elif layout_source == "edited" %}
+        평면도 화면에서 직접 수정한 배치입니다.
+      {% else %}
+        AI가 사진에서 추정한 배치입니다.
+      {% endif %}
+      최종 배치와 선택 상품을 참고해 재질과 조명을 벡터로 표현한
+      AI 입체 SVG입니다.
+    </p>
+  </div>
+
+  {% if scene_3d %}
+    {% if svg_render_url %}
+      <div class="svg-render-frame border mb-3">
+        <img
+          src="{{ svg_render_url }}"
+          class="svg-render-image"
+          alt="최종 배치를 반영한 AI 입체 인테리어 SVG"
+        >
+      </div>
+
+      <div class="ai-description p-3 mb-4">
+        이 이미지는 원본 방 구조, 최종 평면도, 선택 상품 사진을 참고해 만든
+        <strong>AI 입체 SVG</strong>입니다. 실제 시공 결과와 재질·크기·조명이
+        다를 수 있으며 사진이 아닌 벡터 일러스트입니다.
+      </div>
+    {% elif svg_render_error %}
+      <div class="alert alert-warning mb-4" role="alert">
+        {{ svg_render_error }}
+      </div>
+    {% endif %}
+
+    <h5 class="mb-2">
+      정확한 배치 확인
+    </h5>
+    <p class="small text-muted mb-2">
+      아래 화면은 평면도 좌표와 실측값을 유지합니다. 마우스로 돌려보고
+      가구를 짚으면 크기를 확인할 수 있습니다.
+    </p>
+
+    <div
+      id="floorplan3dControls"
+      class="btn-group btn-group-sm mb-2"
+      role="group"
+      aria-label="3D 시점"
+    >
+      <button type="button" class="btn btn-outline-secondary active" data-view-preset="iso">
+        입체
+      </button>
+      <button type="button" class="btn btn-outline-secondary" data-view-preset="top">
+        위에서
+      </button>
+      <button type="button" class="btn btn-outline-secondary" data-view-preset="eye">
+        눈높이
+      </button>
+      <button type="button" class="btn btn-outline-secondary active" id="floorplan3dLabels">
+        이름 숨기기
+      </button>
+    </div>
+
+    {# data-autostart: 전용 화면이라 토글 없이 바로 3D를 띄운다 #}
+    <div
+      id="floorplan3dBox"
+      class="border mb-3"
+      data-autostart="true"
+    ></div>
+
+    <p
+      id="floorplan3dStatus"
+      class="small text-muted preview-3d-hint mb-3"
+      aria-live="polite"
+    ></p>
+
+    <div class="ai-description p-3 mb-4">
+      배치 확인 화면의 가구는 종류별 기본 형태로 표시됩니다. 실제 구매 상품의
+      생김새가 아니라 <strong>크기와 배치</strong>를 확인하는 용도예요.
+      {% if scene_3d.room.estimated %}
+        <br>
+        방 치수를 입력하지 않아 <strong>비율로 추정한 크기</strong>로 그렸습니다.
+        정확히 확인하려면 사진 업로드 단계에서 방 크기를 입력해 주세요.
+      {% endif %}
+    </div>
+
+  {% else %}
+    <div
+      class="
+        result-image border d-flex align-items-center
+        justify-content-center mb-4
+      "
+      style="height: min(50vh, 420px); min-height: 300px;"
+    >
+      <div class="text-center preview-3d-empty">
+        <p class="mb-2">
+          3D로 보여줄 배치가 없어요.
+        </p>
+
+        <p class="text-muted small mb-0">
+          {{ scene_error or "평면도를 먼저 생성해 주세요." }}
+        </p>
+      </div>
+    </div>
+  {% endif %}
+
+  <div class="d-flex justify-content-between">
+    <a
+      href="{{ url_for('result') }}"
+      class="btn btn-outline-dark rounded-pill px-4"
+    >
+      결과로 돌아가기
+    </a>
+
+    <a
+      href="{{ url_for('index') }}"
+      class="btn btn-dark rounded-pill px-4"
+    >
+      처음으로
+    </a>
+  </div>
+
+</div>
+{% endblock %}
+
+{% block extra_js %}
+{% if scene_3d %}
+  {# 3D 씬 데이터 — Gemini 재호출 없이 layout 을 미터 단위로 환산한 결과 #}
+  <script type="application/json" id="floorplan3dScene">
+    {{ scene_3d | tojson }}
+  </script>
+
+  {# three.js 는 bare specifier 로 import 하므로 importmap 이 모듈 로드보다 먼저 와야 한다 #}
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+      }
+    }
+  </script>
+  <script
+    type="module"
+    src="{{ url_for('static', filename='js/floorplan_3d.js', v='20260730-3d-view') }}"
+  ></script>
+{% endif %}
+{% endblock %}

@@ -10,22 +10,32 @@ venv-win/
 local_backup/
 model2/output/
 
+# 로컬 Python 설치·의존성 산출물
+/python-*.exe
+/python-install*.log
+*.whl
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
 # 환경변수
+#   키가 들어 있으므로 추적하지 않는다. clone 후 .env.example 을 복사해 채운다.
 .env
 backend/app.db
 
 # 생성 산출물 (재생성 가능)
 output/floorplans/*
 !output/floorplans/.gitkeep
-data/gemini_features.json
-data/gemini_embeddings.npy
-data/gemini_image_paths.json
-data/previews/umap_gemini.png
-data/clip_image_embeddings.npy
-data/clip_image_paths.json
 
-# 검색 캐시 (자동 생성)
-data/prompt_translation_cache.json
+# 임베딩·클러스터·번역 캐시 (약 17MB) — images/final 에서 재생성 가능
+#   python -c "from mood_search_v1 import run_embedding, run_clustering, run_labeling"
+data/
+
+# 무드 라이브러리 산출물 (약 207MB) — mood_search_v1.run_build_library 로 재생성
+mood_library/
 
 # 업로드/생성 이미지 (프론트 런타임 산출물)
 frontend/static/uploads/*

@@ -7,6 +7,7 @@ import io
 import os
 import re
 import shutil
+import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
@@ -17,6 +18,7 @@ from google.genai import types
 import requests
 from PIL import Image
 
+from .gemini_retry import call_with_retry
 from .gemini_svg_experiment import _extract_svg, generate_svg_text
 from .product_icon_svg import generate_product_icon_svg
 from .topdown_experiment.run import analyze_room
@@ -24,60 +26,6 @@ from .topdown_experiment.run import analyze_room
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_ANALYSIS_MODEL = "gemini-2.5-flash"
-
-PRODUCT_VISUAL_PROMPT = """
-Analyze only the furniture product in this shopping representative image.
-Ignore the room, background, text, people, props, and photography perspective.
-Describe how the product should look as a clean orthographic top-down floorplan
-symbol. Return JSON only:
-{
-  "shape": "rectangle|rounded_rectangle|square|circle|oval|l_shape|irregular",
-  "primary_color": "#RRGGBB",
-  "secondary_color": "#RRGGBB",
-  "material": "wood|fabric|metal|glass|leather|woven|plastic|mixed",
-  "corner_roundness": 0.0,
-  "has_center_division": false,
-  "seat_count": 0,
-  "has_armrests": false,
-  "has_headboard": false,
-  "has_cushions": false,
-  "storage_type": "none|lift_up|drawers|open_shelf",
-  "is_frame_only": false,
-  "leg_style": "none|wood|metal|sled|four_legs|pedestal",
-  "pattern": "solid|striped|checkered|geometric|floral|woven",
-  "has_border": true,
-  "detail": "short visual feature",
-  "parts": [
-    {
-      "primitive": "rect|ellipse|line|polygon",
-      "role": "frame|surface|backrest|seat|cushion|armrest|storage|leg|detail",
-      "x": 0.0,
-      "y": 0.0,
-      "width": 1.0,
-      "height": 1.0,
-      "corner_roundness": 0.0,
-      "fill": "primary|secondary|accent|light|dark|none",
-      "stroke": true,
-      "stroke_width": 0.01,
-      "points": [[0.0, 0.0]],
-      "z_index": 0
-    }
-  ]
-}
-Use the actual product's dominant colors and actual outline. Distinguish a
-wooden storage bed frame from an upholstered bed, and preserve drawers,
-lift-up storage, open shelves, cushions, arms and legs when visible.
-corner_roundness must be from 0 to 1. Represent only features clearly visible
-in the product or explicitly stated in its title.
-Create 3 to 18 parts that together form a complete, recognizable top-down
-symbol of this exact product. All coordinates and sizes are normalized from
-0 to 1 inside the product bounds. For line, x/y is the start and width/height
-is the end. For polygon, provide 3 to 10 normalized points. Use symbolic fill
-names so title-based color correction remains possible. Preserve distinctive
-asymmetry, section count, arms, cushions, drawers and open spaces. Do not draw
-the photo background, labels, dimensions, people, bedding or decor that is
-not part of the sold product.
-""".strip()
 
 TYPE_MAP = {
     "bed": "bed",
@@ -146,7 +94,10 @@ def enrich_products_with_visual_profiles(
     cache_dir: str | Path,
 ) -> list[dict[str, Any]]:
     """Analyze selected product photos with Gemini, with a local fallback."""
-    cache_root = Path(cache_dir)
+    cache_root = Path(cache_dir).expanduser()
+    if not cache_root.is_absolute():
+        cache_root = PROJECT_ROOT / cache_root
+    cache_root = cache_root.resolve()
     gemini_cache_dir = cache_root / "product_visuals_gemini_v3"
     local_cache_dir = cache_root / "product_visuals_local_v3"
     # Bump the cache whenever the photo-to-icon contract changes.  Reusing
@@ -315,53 +266,6 @@ def enrich_products_with_visual_profiles(
             )
 
     return products
-
-
-def _gemini_product_visual_profile(
-    client: genai.Client,
-    image_bytes: bytes,
-    mime_type: str,
-    product: dict[str, Any],
-) -> dict[str, Any]:
-    """Extract a detailed, renderer-friendly product profile with Gemini."""
-    model = os.getenv(
-        "GEMINI_PRODUCT_MODEL",
-        os.getenv(
-            "GEMINI_FEATURE_MODEL",
-            "gemini-2.5-flash-lite",
-        ),
-    ).strip()
-    context = (
-        f"\nProduct category: {product.get('type', '')}"
-        f"\nProduct title: {product.get('title', '')}"
-    )
-    response = client.models.generate_content(
-        model=model,
-        contents=[
-            PRODUCT_VISUAL_PROMPT + context,
-            types.Part.from_bytes(
-                data=image_bytes,
-                mime_type=mime_type,
-            ),
-        ],
-        config=types.GenerateContentConfig(
-            temperature=0,
-            response_mime_type="application/json",
-        ),
-    )
-    text = str(response.text or "").strip()
-    if text.startswith("```"):
-        text = re.sub(
-            r"^```(?:json)?\s*|\s*```$",
-            "",
-            text,
-            flags=re.IGNORECASE,
-        )
-    profile = json.loads(text)
-    if not isinstance(profile, dict):
-        raise ValueError("Gemini 상품 분석 응답이 JSON 객체가 아닙니다.")
-    profile["analysis_source"] = "gemini"
-    return profile
 
 
 def _local_product_visual_profile(
@@ -1223,6 +1127,23 @@ def _file_digest(path: Path) -> str:
     return digest.hexdigest()
 
 
+# 생성 결과 캐시 유효 시간(초). 30분이 지난 결과는 버리고 다시 만든다.
+FLOORPLAN_CACHE_TTL_SECONDS = 1800
+
+
+def _is_cache_fresh(path: Path) -> bool:
+    """캐시 파일이 존재하고 TTL 안쪽이면 True.
+
+    shutil.copy2가 mtime을 보존하므로, 같은 사진을 다른 이름으로 올려
+    캐시를 복사해 와도 원본이 만들어진 시각을 기준으로 만료된다.
+    """
+    try:
+        age = time.time() - path.stat().st_mtime
+    except OSError:
+        return False
+    return age < FLOORPLAN_CACHE_TTL_SECONDS
+
+
 def _reuse_identical_upload_cache(
     image_path: Path,
     output_dir: Path,
@@ -1233,7 +1154,7 @@ def _reuse_identical_upload_cache(
     raw_path: Path,
 ) -> bool:
     """파일명이 달라도 내용이 같은 업로드면 기존 Gemini 결과를 복사한다."""
-    if scene_path.exists() and svg_path.exists():
+    if _is_cache_fresh(scene_path) and _is_cache_fresh(svg_path):
         return True
     source_digest = _file_digest(image_path)
     for candidate in image_path.parent.iterdir():
@@ -1247,7 +1168,10 @@ def _reuse_identical_upload_cache(
             continue
         candidate_scene = output_dir / f"{candidate.stem}_model2_scene.json"
         candidate_svg = output_dir / f"{candidate.stem}_model2_floorplan.svg"
-        if not (candidate_scene.exists() and candidate_svg.exists()):
+        if not (
+            _is_cache_fresh(candidate_scene)
+            and _is_cache_fresh(candidate_svg)
+        ):
             continue
         shutil.copy2(candidate_scene, scene_path)
         shutil.copy2(candidate_svg, svg_path)
@@ -1467,9 +1391,27 @@ def generate_floorplan_for_web(
     image_path = Path(image_path)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    model = analysis_model or os.getenv(
+    base_model = analysis_model or os.getenv(
         "GEMINI_ANALYSIS_MODEL",
         DEFAULT_ANALYSIS_MODEL,
+    )
+    # 두 단계는 모델에 요구하는 바가 다르다.
+    #  - 배치 분석: 구조화된 JSON. normalize_layout이 빠진 필드를 메워줘서
+    #    가벼운 모델로도 버틴다. 무료 등급 RPD가 큰 lite 계열이 유리하다.
+    #  - SVG 생성: layout id와 정확히 일치하는 <g id="...">를 붙여야 해서
+    #    (prepare_floorplan_edit_markup / _remove_object_and_label이 이 id로
+    #    가구를 찾는다) 지시 준수력이 좋은 모델이 필요하다.
+    # .env에서 따로 지정할 수 있고, 없으면 기존처럼 한 모델을 공유한다.
+    # 호출자가 analysis_model을 명시하면 그 값을 그대로 존중한다.
+    layout_model = (
+        analysis_model
+        or os.getenv("GEMINI_LAYOUT_MODEL", "").strip()
+        or base_model
+    )
+    svg_model = (
+        analysis_model
+        or os.getenv("GEMINI_SVG_MODEL", "").strip()
+        or base_model
     )
     stem = image_path.stem
     scene_path = output_dir / f"{stem}_model2_scene.json"
@@ -1494,10 +1436,17 @@ def generate_floorplan_for_web(
         )
 
     client = _client()
-    if skip_existing and scene_path.exists():
+    scene_reused = skip_existing and _is_cache_fresh(scene_path)
+    if scene_reused:
         scene = json.loads(scene_path.read_text(encoding="utf-8"))
     else:
-        scene = analyze_room(client, image_path, model)
+        scene = call_with_retry(
+            analyze_room,
+            client,
+            image_path,
+            layout_model,
+            description="방 배치 분석",
+        )
         scene_path.write_text(
             json.dumps(scene, ensure_ascii=False, indent=2),
             encoding="utf-8",
@@ -1518,12 +1467,16 @@ def generate_floorplan_for_web(
         encoding="utf-8",
     )
 
-    if not (skip_existing and svg_path.exists()):
-        svg_text, raw_text = generate_svg_text(
+    # scene을 새로 뽑았으면 SVG도 반드시 다시 만든다. 새 layout의 객체 id와
+    # 옛 SVG의 <g id="...">가 어긋나면 수정·삭제 기능이 조용히 죽는다.
+    if not (scene_reused and _is_cache_fresh(svg_path)):
+        svg_text, raw_text = call_with_retry(
+            generate_svg_text,
             client,
             image_path,
             scene,
-            model=model,
+            model=svg_model,
+            description="평면도 SVG 생성",
         )
         svg_path.write_text(svg_text, encoding="utf-8")
         base_svg_path.write_text(
@@ -1569,6 +1522,9 @@ def generate_floorplan_for_web(
         "svg_markup": svg_markup,
         "objects": furniture_objects,
         "provider": "model2_gemini_svg",
+        # 어느 모델이 만든 결과인지 남긴다. 503/품질 문제를 추적할 때 필요하다.
+        "layout_model": layout_model,
+        "svg_model": svg_model,
     }
 
 

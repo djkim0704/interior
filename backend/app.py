@@ -24,7 +24,6 @@ from flask_login import current_user, login_required
 from ultralytics import YOLO
 
 import ai_backend
-import database
 import product_recommendation as furniture_recommender
 from auth import auth_bp
 from extensions import db, login_manager
@@ -62,6 +61,13 @@ from model1 import (
 from model2 import (
     web_floorplan
     as model2_floorplan
+)
+from model2 import floorplan_3d
+from model2 import gemini_room_svg_render
+from model2 import gemini_furniture_parts
+from model2.gemini_retry import (
+    GeminiBusyError,
+    api_status_code,
 )
 
 from mood_pipeline import rule_based_svg
@@ -125,6 +131,7 @@ login_manager.login_message = "로그인이 필요한 페이지입니다."
 
 @login_manager.user_loader
 def load_user(user_id):
+    """세션에 저장된 사용자 ID로 사용자 정보를 조회한다."""
     try:
         return db.session.get(
             User,
@@ -138,6 +145,80 @@ app.register_blueprint(auth_bp)
 
 with app.app_context():
     db.create_all()
+
+
+def _ensure_mood_library():
+    """무드 라이브러리가 없으면 첫 기동 때 한 번 만든다.
+
+    clone 직후에는 mood_library/ 가 용량 때문에 비어 있다. 그대로 두면
+    /mood-search 가 index.json 을 못 찾아 500 만 계속 뱉는데, 원인이
+    코드가 아니라 "파이프라인을 아직 안 돌렸다" 라서 로그만 봐서는
+    알아차리기 어렵다. 그래서 기동 시점에 직접 만든다.
+
+    CLIP 로컬 추론만 쓰므로 Gemini 호출량(RPD)에는 영향이 없다.
+    """
+    index_path = (
+        MOOD_LIBRARY_DIR
+        / "index.json"
+    )
+
+    if index_path.exists():
+        return
+
+    # 원본 이미지가 없으면 만들 방법이 없다. 무드 검색만 죽고 평면도·상품
+    # 추천은 멀쩡하므로, 기동을 막지 말고 안내만 남긴다.
+    if not MOOD_IMAGE_ROOT.exists() or not any(
+        MOOD_IMAGE_ROOT.iterdir()
+    ):
+        print(
+            "[mood] images/final 이 비어 있어 "
+            "무드 라이브러리를 건너뛴다. "
+            "무드 검색만 비활성화된다."
+        )
+        return
+
+    # CPU 기준 약 4~5분. 무거운 pandas·sklearn·umap 을 여기서 처음 끌어오므로
+    # import 도 함수 안에 둔다(mood_search_v1/__init__.py 의 지연 로딩과 같은 이유).
+    print(
+        "[mood] 무드 라이브러리가 없어 "
+        "새로 만든다. CPU 기준 4~5분 걸린다."
+    )
+
+    try:
+        from mood_search_v1 import (
+            run_build_library,
+            run_clustering,
+            run_embedding,
+            run_labeling,
+        )
+
+        run_embedding()
+        run_clustering()
+        run_labeling()
+        run_build_library()
+
+        print(
+            "[mood] 무드 라이브러리 생성 완료."
+        )
+
+    except Exception as exc:
+        # 빌드가 실패해도 나머지 기능은 살아 있어야 한다.
+        print(
+            "[mood] 무드 라이브러리 생성 실패: "
+            f"{exc}"
+        )
+
+
+# debug=True 의 리로더는 프로세스를 두 번 띄운다. 가드가 없으면 4~5분짜리
+# 빌드가 두 번 돈다. WERKZEUG_RUN_MAIN 은 리로더가 띄운 자식에만 있다.
+if (
+    not app.debug
+    or os.environ.get(
+        "WERKZEUG_RUN_MAIN"
+    )
+    == "true"
+):
+    _ensure_mood_library()
 
 app.json.ensure_ascii = False
 
@@ -227,7 +308,7 @@ PURCHASE_ITEM_IDS = {
 def build_purchase_items(
     purchase_types,
 ):
-    """Convert persisted furniture type names into result-view records."""
+    """저장된 구매 가구 유형을 결과 화면용 항목으로 변환한다."""
     return [
         {
             "type": item_type,
@@ -249,7 +330,7 @@ def parse_saved_json(
     raw,
     default,
 ):
-    """Read a JSON snapshot without allowing one damaged row to break a page."""
+    """저장된 JSON을 안전하게 읽고 손상된 값에는 기본값을 반환한다."""
     try:
         value = json.loads(
             raw or ""
@@ -260,24 +341,6 @@ def parse_saved_json(
     ):
         return default
     return value
-
-
-# 네이버 쇼핑 검색에 사용할 기본 검색어
-PRODUCT_SEARCH_QUERIES = {
-    "bed": "침대프레임",
-    "sofa": "인테리어 소파",
-    "chair": "인테리어 의자",
-    "desk": "인테리어 책상",
-    "table": "인테리어 테이블",
-    "bench": "인테리어 벤치",
-    "shelf": "인테리어 선반",
-    "cabinet": "인테리어 수납장",
-    "dresser": "인테리어 서랍장",
-    "wardrobe": "인테리어 옷장",
-    "lamp": "인테리어 조명",
-    "rug": "인테리어 러그",
-    "plant": "인테리어 식물",
-}
 
 
 # 아직 Model2 자동 배치 기능이 없으므로
@@ -300,6 +363,7 @@ PURCHASE_POSITIONS = [
 def allowed_file(
     filename: str,
 ) -> bool:
+    """업로드 파일의 확장자가 허용 목록에 포함되는지 확인한다."""
     return (
         "." in filename
         and filename
@@ -314,8 +378,7 @@ def allowed_file(
 
 def clean_html(text):
     """
-    네이버 쇼핑 상품명에 포함된
-    HTML 태그를 제거한다.
+    쇼핑 API 상품명에 포함된 HTML 태그를 제거한다.
     """
 
     if text is None:
@@ -332,6 +395,7 @@ def safe_int(
     value,
     default=0,
 ):
+    """값을 정수로 변환하고 실패하면 기본값을 반환한다."""
     try:
         if (
             value is None
@@ -346,6 +410,47 @@ def safe_int(
         TypeError,
     ):
         return default
+
+
+def portable_basename(value):
+    """Windows와 POSIX 경로에서 안전하게 파일명만 추출한다."""
+    text = str(value or "").strip().replace("\\", "/")
+    filename = text.rsplit("/", 1)[-1] if text else ""
+    return "" if filename in {"", ".", ".."} else filename
+
+
+def resolve_generated_file(value):
+    """저장된 파일명이나 경로를 현재 생성 결과 폴더 기준으로 해석한다."""
+    if not value:
+        return None
+
+    filename = portable_basename(value)
+    if not filename:
+        return None
+
+    current_path = Path(GENERATED_DIR) / filename
+    if current_path.is_file():
+        return str(current_path)
+
+    stored_path = Path(str(value))
+    if stored_path.is_absolute() and stored_path.is_file():
+        return str(stored_path)
+    return None
+
+
+def resolve_session_generated_file(key):
+    """세션 경로를 이동 가능한 파일명으로 바꾸고 오래된 참조를 제거한다."""
+    stored_value = session.get(key)
+    resolved_path = resolve_generated_file(stored_value)
+    if resolved_path:
+        portable_value = portable_basename(resolved_path)
+        if stored_value != portable_value:
+            session[key] = portable_value
+        return resolved_path
+
+    if stored_value:
+        session.pop(key, None)
+    return None
 
 
 def save_json_cache(
@@ -397,24 +502,7 @@ def load_json_cache(
     if not filename:
         return default
 
-    safe_filename = os.path.basename(
-        filename
-    )
-
-    # A saved history entry owns an immutable reference to this product
-    # snapshot. Do not remove it when a later pipeline run replaces the
-    # current session's selected-products cache.
-    if (
-        SavedDesign.query
-        .filter_by(
-            selected_products_file=(
-                safe_filename
-            )
-        )
-        .first()
-        is not None
-    ):
-        return
+    safe_filename = portable_basename(filename)
 
     file_path = os.path.join(
         PRODUCT_CACHE_DIR,
@@ -448,6 +536,35 @@ def load_json_cache(
         return default
 
 
+def load_session_json_cache(
+    key,
+    default=None,
+):
+    """세션의 JSON 캐시를 읽고 존재하지 않는 파일 참조는 제거한다."""
+    if default is None:
+        default = {}
+
+    filename = session.get(key)
+    if not filename:
+        return default
+
+    safe_filename = portable_basename(filename)
+    file_path = os.path.join(
+        PRODUCT_CACHE_DIR,
+        safe_filename,
+    )
+    if not os.path.isfile(file_path):
+        session.pop(key, None)
+        return default
+
+    if filename != safe_filename:
+        session[key] = safe_filename
+    return load_json_cache(
+        safe_filename,
+        default=default,
+    )
+
+
 def remove_cache_file(
     filename,
 ):
@@ -458,9 +575,22 @@ def remove_cache_file(
     if not filename:
         return
 
-    safe_filename = os.path.basename(
-        filename
-    )
+    safe_filename = portable_basename(filename)
+
+    # A saved history entry owns an immutable reference to this product
+    # snapshot. Do not remove it when a later pipeline run replaces the
+    # current session's selected-products cache.
+    if (
+        SavedDesign.query
+        .filter_by(
+            selected_products_file=(
+                safe_filename
+            )
+        )
+        .first()
+        is not None
+    ):
+        return
 
     file_path = os.path.join(
         PRODUCT_CACHE_DIR,
@@ -482,417 +612,8 @@ def remove_cache_file(
         )
 
 
-def build_product_query(
-    item_type,
-):
-    """
-    사용자가 입력한 무드 문장에서
-    스타일 키워드를 추출해
-    네이버 쇼핑 검색어에 반영한다.
-    """
-
-    base_query = (
-        PRODUCT_SEARCH_QUERIES.get(
-            item_type,
-            item_type,
-        )
-    )
-
-    prompt_text = str(
-        session.get(
-            "mood_prompt",
-            "",
-        )
-    )
-
-    tags = session.get(
-        "style_tags",
-        [],
-    )
-
-    combined_text = (
-        prompt_text
-        + " "
-        + " ".join(
-            str(tag)
-            for tag in tags
-        )
-    ).lower()
-
-    keyword_map = [
-        (
-            (
-                "원목",
-                "우드",
-                "wood",
-                "wooden",
-            ),
-            "원목",
-        ),
-        (
-            (
-                "미니멀",
-                "minimal",
-            ),
-            "미니멀",
-        ),
-        (
-            (
-                "모던",
-                "modern",
-            ),
-            "모던",
-        ),
-        (
-            (
-                "빈티지",
-                "vintage",
-                "retro",
-                "레트로",
-            ),
-            "빈티지",
-        ),
-        (
-            (
-                "북유럽",
-                "nordic",
-                "scandinavian",
-            ),
-            "북유럽",
-        ),
-        (
-            (
-                "베이지",
-                "beige",
-            ),
-            "베이지",
-        ),
-        (
-            (
-                "화이트",
-                "white",
-            ),
-            "화이트",
-        ),
-        (
-            (
-                "내추럴",
-                "natural",
-            ),
-            "내추럴",
-        ),
-        (
-            (
-                "블랙",
-                "black",
-            ),
-            "블랙",
-        ),
-    ]
-
-    style_keywords = []
-
-    for aliases, output_word in keyword_map:
-        if any(
-            alias in combined_text
-            for alias in aliases
-        ):
-            if (
-                output_word
-                not in style_keywords
-            ):
-                style_keywords.append(
-                    output_word
-                )
-
-    return " ".join(
-        style_keywords[:2]
-        + [base_query]
-    )
-
-
-def build_product_query(
-    item_type,
-):
-    """Build a mood-aware Naver Shopping query from the first-step choice."""
-    base_query = PRODUCT_SEARCH_QUERIES.get(
-        item_type,
-        item_type,
-    )
-    prompt_text = str(
-        session.get(
-            "mood_prompt",
-            "",
-        )
-    )
-    tags = session.get(
-        "style_tags",
-        [],
-    )
-    combined_text = (
-        prompt_text
-        + " "
-        + " ".join(
-            str(tag)
-            for tag
-            in tags
-        )
-    ).lower()
-
-    keyword_map = [
-        (
-            (
-                "luxury modern",
-                "럭셔리",
-                "고급",
-                "우아",
-            ),
-            "럭셔리 모던",
-        ),
-        (
-            (
-                "vintage retro",
-                "빈티지",
-                "레트로",
-                "앤틱",
-                "vintage",
-                "retro",
-            ),
-            "빈티지 레트로",
-        ),
-        (
-            (
-                "natural wood",
-                "내추럴",
-                "자연스러운",
-                "원목",
-                "우드",
-                "wood",
-                "wooden",
-            ),
-            "내추럴 원목",
-        ),
-        (
-            (
-                "warm cozy",
-                "따뜻",
-                "아늑",
-                "포근",
-                "편안",
-                "warm",
-                "cozy",
-            ),
-            "따뜻한 아늑한",
-        ),
-        (
-            (
-                "cool airy",
-                "시원",
-                "청량",
-                "산뜻",
-                "쾌적",
-                "cool",
-                "airy",
-            ),
-            "시원한 밝은",
-        ),
-        (
-            (
-                "cute pastel",
-                "파스텔",
-                "귀여운",
-                "러블리",
-                "pastel",
-            ),
-            "파스텔",
-        ),
-        (
-            (
-                "minimal white",
-                "미니멀",
-                "화이트",
-                "minimal",
-                "white",
-            ),
-            "미니멀 화이트",
-        ),
-        (
-            (
-                "modern grey",
-                "모던 그레이",
-                "모던",
-                "그레이",
-                "modern",
-                "grey",
-                "gray",
-            ),
-            "모던 그레이",
-        ),
-        (
-            (
-                "monochrome",
-                "모노크롬",
-                "모노톤",
-                "흑백",
-            ),
-            "모노톤",
-        ),
-        (
-            (
-                "plant green",
-                "플랜테리어",
-                "식물",
-                "그린",
-                "초록",
-            ),
-            "플랜테리어 그린",
-        ),
-        (
-            (
-                "베이지",
-                "beige",
-            ),
-            "베이지",
-        ),
-        (
-            (
-                "블랙",
-                "black",
-            ),
-            "블랙",
-        ),
-    ]
-    style_keywords = []
-    for aliases, output_word in keyword_map:
-        if (
-            output_word
-            == "모던 그레이"
-            and "luxury modern"
-            in combined_text
-        ):
-            continue
-        if (
-            any(
-                alias in combined_text
-                for alias
-                in aliases
-            )
-            and output_word
-            not in style_keywords
-        ):
-            style_keywords.append(
-                output_word
-            )
-
-    design_attribute_map = {
-        "럭셔리 모던": (
-            "대리석",
-            "골드프레임",
-            "벨벳",
-        ),
-        "빈티지 레트로": (
-            "월넛",
-            "앤틱브라스",
-            "체커보드",
-        ),
-        "내추럴 원목": (
-            "오크원목",
-            "라탄",
-            "린넨",
-        ),
-        "따뜻한 아늑한": (
-            "카멜브라운",
-            "테디패브릭",
-            "라운드형",
-        ),
-        "시원한 밝은": (
-            "아쿠아블루",
-            "투명아크릴",
-            "크롬",
-        ),
-        "파스텔": (
-            "라벤더",
-            "민트",
-            "베이비핑크",
-        ),
-        "미니멀 화이트": (
-            "퓨어화이트",
-            "무광도장",
-            "슬림라인",
-        ),
-        "모던 그레이": (
-            "스모크그레이",
-            "콘크리트",
-            "메탈",
-        ),
-        "모노톤": (
-            "블랙앤화이트",
-            "그래픽패턴",
-            "하이콘트라스트",
-        ),
-        "플랜테리어 그린": (
-            "세이지그린",
-            "테라코타",
-            "행잉플랜트",
-        ),
-        "베이지": (
-            "오트밀",
-            "트래버틴",
-            "톤온톤",
-        ),
-        "블랙": (
-            "매트블랙",
-            "스틸프레임",
-            "다크글라스",
-        ),
-    }
-    design_attributes = []
-    if style_keywords:
-        terms_per_mood = (
-            3
-            if len(
-                style_keywords
-            )
-            == 1
-            else 2
-        )
-        for style_keyword in style_keywords:
-            for attribute in (
-                design_attribute_map.get(
-                    style_keyword,
-                    (style_keyword,),
-                )[:terms_per_mood]
-            ):
-                if (
-                    attribute
-                    not in design_attributes
-                ):
-                    design_attributes.append(
-                        attribute
-                    )
-
-    if not design_attributes:
-        cleaned_prompt = re.sub(
-            r"[^\w가-힣 ]+",
-            " ",
-            prompt_text,
-        )
-        design_attributes = [
-            word
-            for word
-            in cleaned_prompt.split()
-            if len(word) >= 2
-        ][:2]
-
-    # Search concrete visual/material properties instead of abstract mood
-    # words. Keep the furniture noun first to prevent unrelated matches.
-    return " ".join(
-        [base_query]
-        + design_attributes[:4]
-    ).strip()
-
-
 def product_recommendation_mood_key():
+    """현재 무드 조건을 상품 추천 캐시 식별자로 변환한다."""
     payload = {
         "prompt": str(
             session.get(
@@ -925,123 +646,20 @@ def product_recommendation_mood_key():
     ).hexdigest()
 
 
-def search_naver_shopping(
+def search_serpapi_shopping(
     query,
     display=5,
     item_type=None,
 ):
-    """
-    네이버 쇼핑 검색 API를 호출한다.
-    """
-
-    client_id = os.getenv(
-        "NAVER_CLIENT_ID"
+    """SerpApi Google Shopping을 호출해 기존 상품 형식으로 반환한다."""
+    provider = (
+        furniture_recommender
+        .SerpApiShoppingProvider()
     )
-
-    client_secret = os.getenv(
-        "NAVER_CLIENT_SECRET"
+    products = provider.search(
+        query,
+        display=display,
     )
-
-    if (
-        not client_id
-        or not client_secret
-    ):
-        raise ValueError(
-            ".env에서 NAVER_CLIENT_ID 또는 "
-            "NAVER_CLIENT_SECRET을 "
-            "불러오지 못했습니다."
-        )
-
-    url = (
-        "https://openapi.naver.com/"
-        "v1/search/shop.json"
-    )
-
-    headers = {
-        "X-Naver-Client-Id": (
-            client_id
-        ),
-        "X-Naver-Client-Secret": (
-            client_secret
-        ),
-    }
-
-    params = {
-        "query": query,
-        "display": display,
-        "start": 1,
-        "sort": "sim",
-        "exclude": (
-            "used:rental:cbshop"
-        ),
-    }
-
-    # 실행 환경에 잘못된 HTTP(S)_PROXY가 있어도 네이버 공식 API 요청은
-    # 직접 연결한다. 전역 환경변수나 다른 요청의 프록시 설정은 변경하지 않는다.
-    with requests.Session() as naver_session:
-        naver_session.trust_env = False
-        response = naver_session.get(
-            url,
-            headers=headers,
-            params=params,
-            timeout=10,
-        )
-
-    if response.status_code != 200:
-        print(
-            "네이버 API 요청 실패:",
-            response.status_code,
-            response.text,
-        )
-
-        response.raise_for_status()
-
-    data = response.json()
-
-    products = []
-
-    for item in data.get(
-        "items",
-        [],
-    ):
-        products.append(
-            {
-                "title": clean_html(
-                    item.get(
-                        "title"
-                    )
-                ),
-                "link": item.get(
-                    "link"
-                ),
-                "image": item.get(
-                    "image"
-                ),
-                "price": safe_int(
-                    item.get(
-                        "lprice"
-                    )
-                ),
-                "shop": item.get(
-                    "mallName"
-                ),
-                "brand": item.get(
-                    "brand"
-                ),
-                "category1": item.get(
-                    "category1"
-                ),
-                "category2": item.get(
-                    "category2"
-                ),
-                "category3": item.get(
-                    "category3"
-                ),
-                "category4": item.get(
-                    "category4"
-                ),
-            }
-        )
 
     if item_type:
         products = [
@@ -1061,7 +679,7 @@ def product_matches_furniture_type(
     product,
     item_type,
 ):
-    """Reject mood-word matches that are not the requested furniture."""
+    """검색 상품이 요청한 가구 유형과 실제로 일치하는지 확인한다."""
     category_text = " ".join(
         str(
             product.get(
@@ -1158,351 +776,6 @@ def product_matches_furniture_type(
     return category_match or title_match
 
 
-def search_furniture_candidates(
-    item_type,
-    mood_query,
-    *,
-    target_count=8,
-):
-    """Broaden an over-specific mood query without losing furniture type."""
-    base_query = PRODUCT_SEARCH_QUERIES.get(
-        item_type,
-        item_type,
-    )
-    attributes_text = mood_query
-    if attributes_text.startswith(
-        base_query
-    ):
-        attributes_text = (
-            attributes_text[
-                len(
-                    base_query
-                ):
-            ].strip()
-        )
-    attributes = [
-        token
-        for token
-        in attributes_text.split()
-        if token
-    ]
-
-    query_variants = [
-        mood_query,
-        *[
-            f"{base_query} {attribute}"
-            for attribute
-            in attributes
-        ],
-        base_query,
-    ]
-    candidates = []
-    seen_links = set()
-    seen_images = set()
-    seen_titles = set()
-    for query_variant in dict.fromkeys(
-        query_variants
-    ):
-        found = search_naver_shopping(
-            query=query_variant,
-            display=20,
-            item_type=item_type,
-        )
-        for product in found:
-            link_identity = str(
-                product.get("link")
-                or ""
-            ).strip()
-            image_identity = (
-                str(
-                    product.get("image")
-                    or ""
-                )
-                .split("?", 1)[0]
-                .strip()
-                .lower()
-            )
-            title_identity = re.sub(
-                r"[^0-9a-z가-힣]+",
-                "",
-                str(
-                    product.get("title")
-                    or ""
-                ).lower(),
-            )
-            if (
-                not (
-                    link_identity
-                    or image_identity
-                    or title_identity
-                )
-                or (
-                    link_identity
-                    and link_identity
-                    in seen_links
-                )
-                or (
-                    image_identity
-                    and image_identity
-                    in seen_images
-                )
-                or (
-                    title_identity
-                    and title_identity
-                    in seen_titles
-                )
-            ):
-                continue
-            if link_identity:
-                seen_links.add(
-                    link_identity
-                )
-            if image_identity:
-                seen_images.add(
-                    image_identity
-                )
-            if title_identity:
-                seen_titles.add(
-                    title_identity
-                )
-            product = dict(product)
-            product[
-                "matched_query"
-            ] = query_variant
-            candidates.append(
-                product
-            )
-
-        if len(candidates) >= target_count:
-            break
-
-    return candidates
-
-
-def rerank_products_by_selected_mood(
-    products,
-    *,
-    limit=4,
-):
-    """Fuse the selected reference image and prompt, then CLIP-rank products."""
-    if not products:
-        return []
-
-    selected_relative_path = str(
-        session.get(
-            "selected_mood_image",
-            "",
-        )
-        or ""
-    ).strip()
-    prompt_text = str(
-        session.get(
-            "mood_prompt",
-            "",
-        )
-        or ""
-    ).strip()
-    if not selected_relative_path:
-        return products[:limit]
-
-    try:
-        library_root = (
-            MOOD_LIBRARY_DIR.resolve()
-        )
-        selected_path = (
-            MOOD_LIBRARY_DIR
-            / selected_relative_path
-        ).resolve()
-        selected_path.relative_to(
-            library_root
-        )
-        if not selected_path.is_file():
-            return products[:limit]
-
-        image_cache_dir = os.path.join(
-            PRODUCT_CACHE_DIR,
-            "clip_product_images",
-        )
-        os.makedirs(
-            image_cache_dir,
-            exist_ok=True,
-        )
-
-        candidate_paths = []
-        candidate_products = []
-        for product in products:
-            try:
-                image_url = str(
-                    product.get(
-                        "image",
-                        "",
-                    )
-                    or ""
-                ).strip()
-                if not image_url:
-                    continue
-
-                image_key = hashlib.sha256(
-                    image_url.encode(
-                        "utf-8"
-                    )
-                ).hexdigest()[:24]
-                image_path = os.path.join(
-                    image_cache_dir,
-                    f"{image_key}.img",
-                )
-
-                if not os.path.exists(
-                    image_path
-                ):
-                    with requests.Session() as image_session:
-                        image_session.trust_env = False
-                        response = image_session.get(
-                            image_url,
-                            timeout=12,
-                        )
-                        response.raise_for_status()
-                    with open(
-                        image_path,
-                        "wb",
-                    ) as image_file:
-                        image_file.write(
-                            response.content
-                        )
-
-                candidate_paths.append(
-                    Path(
-                        image_path
-                    )
-                )
-                candidate_products.append(
-                    product
-                )
-
-            except Exception as image_exc:
-                print(
-                    "[product-clip] "
-                    "후보 이미지 다운로드 실패: "
-                    f"{image_exc}"
-                )
-
-        if not candidate_paths:
-            return products[:limit]
-
-        model, processor, device = (
-            mood_search_v1._get_clip()
-        )
-        image_embeddings = (
-            mood_search_v1.encode_images(
-                [
-                    selected_path,
-                    *candidate_paths,
-                ],
-                model,
-                processor,
-                device,
-            )
-        )
-        selected_embedding = (
-            image_embeddings[0]
-        )
-
-        prepared = (
-            mood_search_v1
-            .prepare_prompt_for_search(
-                prompt_text,
-                translate_ko=True,
-            )
-        )
-        text_embedding, _ = (
-            mood_search_v1
-            ._build_semantic_query(
-                prepared
-            )
-        )
-
-        # The chosen image carries concrete color/material composition, while
-        # the prompt preserves any explicit mood point the user typed.
-        fused_embedding = (
-            0.62
-            * selected_embedding
-            + 0.38
-            * text_embedding
-        )
-        fused_norm = float(
-            (
-                fused_embedding
-                @ fused_embedding
-            )
-            ** 0.5
-        )
-        if fused_norm > 0:
-            fused_embedding = (
-                fused_embedding
-                / fused_norm
-            )
-
-        ranked = []
-        total = len(
-            candidate_products
-        )
-        for index, (
-            product,
-            embedding,
-        ) in enumerate(
-            zip(
-                candidate_products,
-                image_embeddings[1:],
-            )
-        ):
-            visual_similarity = float(
-                embedding
-                @ fused_embedding
-            )
-            naver_rank_score = (
-                1.0
-                - index
-                / max(
-                    total,
-                    1,
-                )
-            )
-            final_score = (
-                0.85
-                * visual_similarity
-                + 0.15
-                * naver_rank_score
-            )
-            ranked_product = dict(
-                product
-            )
-            ranked_product[
-                "mood_similarity"
-            ] = visual_similarity
-            ranked_product[
-                "recommendation_score"
-            ] = final_score
-            ranked.append(
-                ranked_product
-            )
-
-        ranked.sort(
-            key=lambda product: (
-                -product[
-                    "recommendation_score"
-                ]
-            )
-        )
-        return ranked[:limit]
-
-    except Exception as exc:
-        print(
-            "[product-clip] "
-            f"무드 이미지 재정렬 실패: {exc}"
-        )
-        return products[:limit]
-
-
 def translate_furniture_label(
     item_type,
     original_label,
@@ -1596,33 +869,6 @@ def translate_furniture_label(
     return label
 
 
-def _mood_results_to_urls(
-    results,
-):
-    """
-    기존 images/final 검색 결과의 경로를
-    브라우저용 URL로 변환한다.
-    """
-
-    return [
-        {
-            "url": url_for(
-                "mood_image",
-                filename=result[
-                    "path"
-                ],
-            ),
-            "path": result[
-                "path"
-            ],
-            "score": result[
-                "score"
-            ],
-        }
-        for result in results
-    ]
-
-
 def _mood_v1_results_to_urls(
     results,
 ):
@@ -1670,6 +916,7 @@ def _mood_v1_results_to_urls(
 # ──────────────────────────────────────────────────────
 @app.route("/")
 def index():
+    """서비스의 첫 화면을 표시한다."""
     return render_template(
         "index.html"
     )
@@ -1677,6 +924,7 @@ def index():
 
 @app.route("/gallery")
 def gallery():
+    """무드 이미지 갤러리를 수집해 화면에 표시한다."""
     from mood_pipeline.preprocess import (
         collect_image_paths,
     )
@@ -1711,6 +959,7 @@ def gallery():
 @app.route("/my-designs")
 @login_required
 def my_designs():
+    """현재 사용자가 저장한 디자인 목록을 표시한다."""
     designs = (
         SavedDesign.query
         .filter_by(
@@ -1730,6 +979,7 @@ def my_designs():
 @app.route("/my-designs/<int:design_id>")
 @login_required
 def design_detail(design_id):
+    """선택한 저장 디자인의 상세 정보와 결과물을 표시한다."""
     design = db.session.get(
         SavedDesign,
         design_id,
@@ -1804,6 +1054,7 @@ def design_detail(design_id):
 )
 @login_required
 def delete_design(design_id):
+    """현재 사용자가 소유한 저장 디자인을 삭제한다."""
     design = db.session.get(
         SavedDesign,
         design_id,
@@ -1824,13 +1075,14 @@ def delete_design(design_id):
 
 @app.route("/about")
 def about():
+    """서비스 소개 화면을 표시한다."""
     return render_template(
         "about.html"
     )
 
 
 def clear_design_session():
-    """Reset the design workflow without logging the current user out."""
+    """로그인 상태를 유지하면서 디자인 작업 세션만 초기화한다."""
     login_state = {
         key: session[key]
         for key in (
@@ -1846,19 +1098,9 @@ def clear_design_session():
     )
 
 
-@app.route("/home")
-def home():
-    clear_design_session()
-
-    return redirect(
-        url_for(
-            "index"
-        )
-    )
-
-
 @app.route("/start")
 def start():
+    """이전 디자인 세션을 비우고 무드 입력 단계로 이동한다."""
     clear_design_session()
 
     return redirect(
@@ -1873,6 +1115,7 @@ def start():
 # ──────────────────────────────────────────────────────
 @app.route("/prompt")
 def prompt():
+    """사용자에게 원하는 인테리어 무드를 입력받는 화면을 표시한다."""
     return render_template(
         "prompt.html",
         previews=[],
@@ -1884,6 +1127,7 @@ def prompt():
     methods=["POST"],
 )
 def save_style():
+    """선택한 스타일 태그와 무드 문장을 세션에 저장한다."""
     data = (
         request.get_json(
             silent=True
@@ -1964,6 +1208,7 @@ def save_style():
 
 @app.route("/mood-search")
 def mood_search_api():
+    """입력 문장과 유사한 무드 이미지를 검색해 JSON으로 반환한다."""
     query = (
         request.args.get(
             "q"
@@ -2063,6 +1308,7 @@ def mood_search_api():
 def mood_image(
     filename,
 ):
+    """원본 무드 이미지 파일을 안전하게 전달한다."""
     from flask import (
         send_from_directory,
     )
@@ -2081,6 +1327,7 @@ def mood_image(
 def mood_library_image(
     filename,
 ):
+    """생성된 무드 라이브러리 이미지 파일을 안전하게 전달한다."""
     from flask import (
         send_from_directory,
     )
@@ -2104,6 +1351,7 @@ def mood_library_image(
     ],
 )
 def upload():
+    """방 사진과 실측 정보를 입력받아 업로드 단계를 처리한다."""
     if (
         request.method
         == "GET"
@@ -2350,6 +1598,7 @@ def upload():
 # ──────────────────────────────────────────────────────
 @app.route("/loading")
 def loading():
+    """업로드 이후 평면도 생성 대기 화면을 표시한다."""
     if (
         "uploaded_file"
         not in session
@@ -2365,8 +1614,113 @@ def loading():
     )
 
 
+def carry_floorplan_to_result() -> str | None:
+    """/floorplan 결과를 /result 가 읽는 자리로 그대로 넘긴다.
+
+    [임시] 평소에는 POST /generate-design 이 선택 상품을 반영해
+    modified_floorplan_file 을 만든다. 그 단계를 건너뛰는 동안에는 사용자가
+    /floorplan 에서 편집한 SVG(없으면 생성 원본)를 그대로 결과 평면도로 쓴다.
+    파일을 새로 만들지 않고 세션 키만 이어 붙이므로 Gemini 호출이 없다.
+    """
+    filename = str(
+        session.get("edited_floorplan_file")
+        or session.get("original_floorplan_file")
+        or ""
+    ).strip()
+    if not filename:
+        return None
+
+    # 편집본은 업로드한 사진이 바뀌면 무효다. /floorplan 이 쓰는 판정과 맞춘다.
+    if (
+        session.get("edited_floorplan_file")
+        and str(session.get("edited_floorplan_upload") or "")
+        != str(session.get("uploaded_file") or "")
+    ):
+        filename = str(
+            session.get("original_floorplan_file") or ""
+        ).strip()
+        if not filename:
+            return None
+
+    if not os.path.isfile(
+        os.path.join(
+            GENERATED_DIR,
+            os.path.basename(filename),
+        )
+    ):
+        return None
+
+    session["modified_floorplan_file"] = filename
+    return filename
+
+
+def floorplan_cache_enabled() -> bool:
+    """평면도 생성 결과를 재사용할지 여부.
+
+    끄면 같은 사진이어도 Gemini를 매번 다시 호출한다. 무료 등급은 RPD가
+    빠듯하므로(호출 2번 = 평면도 1장) 모델 비교 같은 때만 끄는 것이 좋다.
+    """
+    return os.getenv(
+        "FLOORPLAN_CACHE",
+        "1",
+    ).strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
+
+
+def current_room_plan():
+    """세션에 담긴 방 실측치 → 면적·평수 요약. 없으면 (None, False).
+
+    /floorplan 과 /preview-3d 가 같은 치수를 써야 하므로 한 곳에 모아둔다.
+    """
+    room_width = session.get(
+        "room_width"
+    )
+
+    room_depth = session.get(
+        "room_depth"
+    )
+
+    ceiling_height = session.get(
+        "ceiling_height"
+    )
+
+    dimensions_provided = (
+        room_width is not None
+        and room_depth is not None
+        and ceiling_height is not None
+    )
+
+    if not dimensions_provided:
+        return None, False
+
+    area_sqm = (
+        room_width
+        * room_depth
+    )
+
+    return {
+        "area_sqm": round(
+            area_sqm,
+            1,
+        ),
+        "area_pyeong": round(
+            area_sqm
+            / 3.3058,
+            1,
+        ),
+        "width_m": room_width,
+        "depth_m": room_depth,
+        "ceiling_m": ceiling_height,
+    }, True
+
+
 @app.route("/floorplan")
 def floorplan():
+    """업로드한 방 사진으로 평면도를 생성하고 편집 화면을 표시한다."""
     if (
         "uploaded_file"
         not in session
@@ -2426,6 +1780,8 @@ def floorplan():
 
     svg_markup = None
     floorplan_error = None
+    floorplan_status = 200
+    scene_3d = None
 
     upload_path = os.path.join(
         UPLOAD_DIR,
@@ -2450,7 +1806,9 @@ def floorplan():
                 .generate_floorplan_for_web(
                     upload_path,
                     GENERATED_DIR,
-                    skip_existing=True,
+                    skip_existing=(
+                        floorplan_cache_enabled()
+                    ),
                     room_width=(
                         room_width
                     ),
@@ -2463,8 +1821,10 @@ def floorplan():
         layout_file = result.get(
             "layout_file"
         )
-        saved_edit_layout = str(
-            session.get("edited_floorplan_layout_file")
+        saved_edit_layout = (
+            resolve_session_generated_file(
+                "edited_floorplan_layout_file"
+            )
             or ""
         )
         saved_edit_upload = str(
@@ -2482,7 +1842,9 @@ def floorplan():
         if layout_file:
             session[
                 "floorplan_layout_file"
-            ] = layout_file
+            ] = portable_basename(
+                layout_file
+            )
 
         svg_path = result.get(
             "svg_path"
@@ -2579,6 +1941,8 @@ def floorplan():
         svg_markup = result.get(
             "svg_markup"
         )
+        editable_layout = None
+
         if svg_markup and layout_file:
             try:
                 editable_layout = json.loads(
@@ -2599,10 +1963,54 @@ def floorplan():
                     f"편집용 SVG 준비 실패: {edit_prepare_exc}"
                 )
 
+        # 3D 배치 확인용 씬 데이터. Gemini 재호출은 없다.
+        # 2D와 같은 좌표를 쓰려고 rule_based_svg 배치 파이프라인을 통과시키는데,
+        # 그 안에서 방 크기 전역을 바꾸므로 평면도 생성과 같은 락을 잡는다.
+        if editable_layout is not None:
+            try:
+                with floorplan_generation_lock:
+                    scene_3d = (
+                        floorplan_3d
+                        .build_scene(
+                            editable_layout,
+                            plan,
+                        )
+                    )
+            except Exception as scene_exc:
+                print(
+                    "[floorplan-3d] "
+                    f"씬 데이터 생성 실패: {scene_exc}"
+                )
+
     except Exception as exc:
         floorplan_error = str(
             exc
         )
+
+        # google-genai 예외는 status_code가 아니라 code에 HTTP 상태를 담는다.
+        gemini_status = (
+            api_status_code(
+                exc
+            )
+            or getattr(
+                exc,
+                "status_code",
+                None,
+            )
+        )
+
+        if isinstance(
+            exc,
+            GeminiBusyError,
+        ):
+            floorplan_error = (
+                "AI 서버가 일시적으로 혼잡합니다. "
+                "잠시 후 다시 시도해 주세요."
+            )
+            floorplan_status = 503
+
+        elif gemini_status == 429:
+            floorplan_status = 429
 
         print(
             "[floorplan] "
@@ -2652,21 +2060,26 @@ def floorplan():
                 "detected_furniture"
             ] = []
 
-    return render_template(
-        "floorplan.html",
-        plan=plan,
-        dimensions_provided=(
-            dimensions_provided
+    return (
+        render_template(
+            "floorplan.html",
+            plan=plan,
+            dimensions_provided=(
+                dimensions_provided
+            ),
+            svg_markup=svg_markup,
+            floorplan_error=(
+                floorplan_error
+            ),
+            scene_3d=scene_3d,
         ),
-        svg_markup=svg_markup,
-        floorplan_error=(
-            floorplan_error
-        ),
+        floorplan_status,
     )
 
 
 @app.post("/floorplan/save-edit")
 def save_floorplan_edit():
+    """사용자가 편집한 평면도 SVG와 배치 정보를 저장한다."""
     if "uploaded_file" not in session:
         return jsonify(
             {"ok": False, "error": "업로드된 방 사진이 없습니다."}
@@ -2687,8 +2100,10 @@ def save_floorplan_edit():
             sanitized,
             encoding="utf-8",
         )
-        layout_path = str(
-            session.get("floorplan_layout_file")
+        layout_path = (
+            resolve_session_generated_file(
+                "floorplan_layout_file"
+            )
             or ""
         )
         if layout_path and os.path.isfile(layout_path):
@@ -2714,11 +2129,11 @@ def save_floorplan_edit():
                 ),
                 encoding="utf-8",
             )
-            session["edited_floorplan_layout_file"] = str(
-                edited_layout_path
+            session["edited_floorplan_layout_file"] = (
+                edited_layout_path.name
             )
-            session["floorplan_layout_file"] = str(
-                edited_layout_path
+            session["floorplan_layout_file"] = (
+                edited_layout_path.name
             )
         session["edited_floorplan_file"] = filename
         session["edited_floorplan_upload"] = str(
@@ -2742,6 +2157,16 @@ def save_floorplan_edit():
     "/furniture-choice"
 )
 def furniture_choice():
+    """탐지된 기존 가구의 유지·제거·교체 선택 화면을 표시한다.
+
+    [임시] 가구 선택과 상품 추천 단계를 건너뛰고 /floorplan 다음에 바로
+    /result 로 보낸다. 라우트 자체는 남겨 둬야 템플릿의
+    url_for("furniture_choice")가 BuildError 없이 동작한다.
+    아래 return 두 줄만 지우면 원래 화면으로 돌아온다.
+    """
+    carry_floorplan_to_result()
+    return redirect(url_for("result"))
+
     if (
         "mood_prompt"
         not in session
@@ -2788,6 +2213,7 @@ def furniture_choice():
 
 
 def default_furniture_choices():
+    """탐지된 가구 목록으로 기본 유지 선택값을 생성한다."""
     return [
         {
             "id": item.get(
@@ -2814,10 +2240,10 @@ def default_furniture_choices():
 
 
 # ──────────────────────────────────────────────────────
-# STEP 5: 종류별 네이버 쇼핑 상품 추천 및 선택
+# STEP 5: 종류별 Google Shopping 상품 추천 및 선택
 # ──────────────────────────────────────────────────────
 def parse_price_filter_value(raw):
-    """Convert an optional comma-separated won amount to a non-negative int."""
+    """쉼표가 포함될 수 있는 가격 입력을 0 이상의 정수로 변환한다."""
     if raw is None:
         return None
     raw_text = str(raw).strip().replace(",", "")
@@ -2831,7 +2257,7 @@ def parse_price_filter_value(raw):
 
 
 def price_within_filter(price, price_min, price_max):
-    """Return whether a known product price is inside the requested range."""
+    """상품 가격이 사용자가 지정한 최소·최대 범위에 포함되는지 확인한다."""
     if not price:
         return False
     if price_min is not None and price < price_min:
@@ -2849,6 +2275,14 @@ def price_within_filter(price, price_min, price_max):
     ],
 )
 def product_selection():
+    """가구 유형별 추천 상품을 검색해 선택 화면에 표시한다.
+
+    [임시] furniture_choice와 같은 이유로 /result 로 보낸다.
+    아래 return 두 줄만 지우면 원래 화면으로 돌아온다.
+    """
+    carry_floorplan_to_result()
+    return redirect(url_for("result"))
+
     if (
         "mood_prompt"
         not in session
@@ -3070,7 +2504,7 @@ def product_selection():
         "mood_key"
     )
 
-    recommendation_version = 15
+    recommendation_version = 16
     cached_recommendation_version = (
         cached_data.get(
             "recommendation_version"
@@ -3214,7 +2648,7 @@ def product_selection():
 
         provider = (
             furniture_recommender
-            .NaverShoppingProvider()
+            .SerpApiShoppingProvider()
         )
         image_similarity_service = None
         if (
@@ -3254,6 +2688,45 @@ def product_selection():
                 0,
             )
         )
+
+        # 아래 루프는 가구 종류마다 SerpApi를 한 번씩 부른다. 순차로 돌면
+        # 종류 수 x 12초(실측 중앙값)가 그대로 대기 시간이 되어, 13종을 고르면
+        # 2분 30초를 넘긴다. 질의 생성은 규칙 기반이라 API를 쓰지 않으므로
+        # 먼저 모든 질의를 만들어 한꺼번에 병렬로 받아 둔다. 루프 자체의 순서와
+        # 누적 상태는 건드리지 않으므로 추천 결과는 달라지지 않는다.
+        try:
+            provider.prefetch(
+                [
+                    query
+                    for item_type in purchase_items
+                    for query in (
+                        furniture_recommender
+                        .generate_search_queries(
+                            furniture_recommender
+                            .normalize_category(
+                                item_type
+                            ),
+                            dict(
+                                mood_analysis.get(
+                                    "mood_scores",
+                                    {},
+                                )
+                            ),
+                            observed,
+                            str(
+                                recommendation_session_id
+                            ),
+                            request_round,
+                        )
+                    )
+                ]
+            )
+        except Exception as prefetch_exc:
+            print(
+                "[product-selection] "
+                "사전 조회 실패, 순차 조회로 진행: "
+                f"{prefetch_exc}"
+            )
 
         for item_type in purchase_items:
             label = (
@@ -3428,6 +2901,7 @@ def product_selection():
 def read_generated_svg(
     filename,
 ):
+    """생성 결과 폴더의 SVG 파일을 읽어 문자열로 반환한다."""
     if not filename:
         return None
 
@@ -3459,7 +2933,8 @@ def create_modified_floorplan(
     furniture_choices,
     selected_products,
 ):
-    layout_path = session.get(
+    """가구 선택과 구매 상품을 반영한 수정 평면도를 생성한다."""
+    layout_path = resolve_session_generated_file(
         "floorplan_layout_file"
     )
 
@@ -3828,6 +3303,7 @@ def create_modified_floorplan(
     methods=["POST"],
 )
 def generate_design():
+    """최종 선택 상품을 반영해 디자인 결과와 수정 평면도를 생성한다."""
     if (
         "mood_prompt"
         not in session
@@ -4132,6 +3608,7 @@ def generate_design():
     methods=["POST"],
 )
 def toggle_furniture():
+    """가구 유지·제거·교체 상태를 변경하고 수정 평면도를 갱신한다."""
     data = (
         request.get_json(
             silent=True
@@ -4215,10 +3692,8 @@ def toggle_furniture():
     ] = furniture_choices
 
     selected_products = (
-        load_json_cache(
-            session.get(
-                "selected_products_file"
-            ),
+        load_session_json_cache(
+            "selected_products_file",
             default=[],
         )
     )
@@ -4262,6 +3737,7 @@ def toggle_furniture():
     methods=["GET"],
 )
 def search_products():
+    """검색어와 필터 조건으로 추가 상품을 검색해 JSON으로 반환한다."""
     query = (
         request.args.get(
             "q"
@@ -4281,7 +3757,7 @@ def search_products():
 
     try:
         products = (
-            search_naver_shopping(
+            search_serpapi_shopping(
                 query,
                 display=6,
             )
@@ -4325,6 +3801,7 @@ def search_products():
     methods=["POST"],
 )
 def add_product():
+    """사용자가 고른 상품을 선택 목록에 추가하고 결과를 갱신한다."""
     data = (
         request.get_json(
             silent=True
@@ -4369,10 +3846,8 @@ def add_product():
         ), 400
 
     selected_products = (
-        load_json_cache(
-            session.get(
-                "selected_products_file"
-            ),
+        load_session_json_cache(
+            "selected_products_file",
             default=[],
         )
     )
@@ -4477,6 +3952,7 @@ def add_product():
 # ──────────────────────────────────────────────────────
 @app.route("/result")
 def result():
+    """완성된 인테리어 디자인 결과 화면을 표시한다."""
     generated_file = session.get(
         "generated_file"
     )
@@ -4512,10 +3988,8 @@ def result():
     )
 
     selected_products = (
-        load_json_cache(
-            session.get(
-                "selected_products_file"
-            ),
+        load_session_json_cache(
+            "selected_products_file",
             default=[],
         )
     )
@@ -4561,11 +4035,519 @@ def result():
     )
 
 
+# ──────────────────────────────────────────────────────
+# STEP 6: 3D 배치 확인
+# ──────────────────────────────────────────────────────
+def resolve_final_layout_path():
+    """3D로 보여줄 layout 파일 경로. 사용자의 최종 선택이 반영된 것을 우선한다.
+
+    1) modified_layout_file  — 가구 유지·제거 + 구매 상품이 반영된 layout
+    2) edited_floorplan_layout_file — 평면도 화면에서 드래그로 직접 고친 layout
+    3) floorplan_layout_file — AI가 처음 만든 layout
+    """
+    candidates = (
+        ("modified_layout_file", "modified"),
+        ("edited_floorplan_layout_file", "edited"),
+        ("floorplan_layout_file", "original"),
+    )
+    for session_key, source in candidates:
+        resolved_path = resolve_session_generated_file(
+            session_key
+        )
+        if resolved_path:
+            return resolved_path, source
+
+    return None, None
+
+
+# ──────────────────────────────────────────────────────
+# 개발용: 이미 캐시된 평면도를 세션에 태워 Gemini 호출 없이 뒷단계를 본다.
+# 무료 등급 일일 쿼터(모델당 20회)를 쓰지 않고 UI를 확인할 때 쓴다.
+# debug 모드에서만 열린다.
+# ──────────────────────────────────────────────────────
+def cached_floorplan_uploads():
+    """평면도 캐시(scene+layout+svg)가 완비된 업로드 파일명 목록."""
+    if not os.path.isdir(UPLOAD_DIR):
+        return []
+
+    ready = []
+
+    for name in sorted(
+        os.listdir(UPLOAD_DIR)
+    ):
+        path = os.path.join(
+            UPLOAD_DIR,
+            name,
+        )
+
+        if (
+            not os.path.isfile(path)
+            or name.startswith(".")
+        ):
+            continue
+
+        stem = os.path.splitext(
+            name
+        )[0]
+
+        needed = [
+            f"{stem}_model2_scene.json",
+            f"{stem}_model2_layout.json",
+            f"{stem}_model2_floorplan.svg",
+        ]
+
+        if all(
+            os.path.isfile(
+                os.path.join(
+                    GENERATED_DIR,
+                    part,
+                )
+            )
+            for part in needed
+        ):
+            ready.append(name)
+
+    return ready
+
+
+@app.route("/dev/use-cached")
+def dev_use_cached():
+    """개발 환경에서 기존 평면도 캐시를 세션에 연결해 재사용한다."""
+    if not app.debug:
+        abort(404)
+
+    available = (
+        cached_floorplan_uploads()
+    )
+
+    requested = request.args.get(
+        "file",
+        "",
+    ).strip()
+
+    # 파일을 지정하지 않으면 재사용 가능한 캐시 목록을 JSON으로 반환한다.
+    if not requested:
+        return jsonify(
+            {
+                "count": len(
+                    available
+                ),
+                "files": available,
+            }
+        )
+
+    # 파일명을 외우지 않아도 되게 latest 를 허용한다
+    if requested == "latest":
+        newest = max(
+            available,
+            key=lambda name: os.path.getmtime(
+                os.path.join(
+                    UPLOAD_DIR,
+                    name,
+                )
+            ),
+            default="",
+        )
+
+        if not newest:
+            return jsonify(
+                {
+                    "ok": False,
+                    "error": (
+                        "재사용할 평면도 "
+                        "캐시가 없습니다."
+                    ),
+                }
+            ), 404
+
+        requested = newest
+
+    # 경로 조작 방지: 파일명만 취하고 캐시 완비 목록에 있는지 확인
+    safe_name = os.path.basename(
+        requested
+    )
+
+    if safe_name not in available:
+        return jsonify(
+            {
+                "ok": False,
+                "error": (
+                    "캐시가 완비된 업로드가 "
+                    "아닙니다."
+                ),
+                "files": available,
+            }
+        ), 404
+
+    clear_design_session()
+
+    session[
+        "uploaded_file"
+    ] = safe_name
+
+    session[
+        "original_filename"
+    ] = safe_name
+
+    # STEP 1(프롬프트·무드 선택)을 건너뛰므로 그 단계가 넣던 값을 채운다.
+    # 이게 없으면 /product-selection 이 /prompt 로 되돌린다.
+    session[
+        "mood_prompt"
+    ] = request.args.get(
+        "prompt",
+        "",
+    ).strip() or "밝고 아늑한 원룸"
+
+    session[
+        "style_tags"
+    ] = []
+
+    session[
+        "selected_mood_image"
+    ] = ""
+
+    def _dimension(key, fallback):
+        """쿼리 문자열의 방 치수를 읽고 유효하지 않으면 기본값을 쓴다."""
+        raw = request.args.get(
+            key,
+            "",
+        ).strip()
+
+        try:
+            value = float(raw)
+        except ValueError:
+            return fallback
+
+        return (
+            value
+            if value > 0
+            else fallback
+        )
+
+    session["room_width"] = _dimension(
+        "width",
+        3.6,
+    )
+
+    session["room_depth"] = _dimension(
+        "depth",
+        5.0,
+    )
+
+    session[
+        "ceiling_height"
+    ] = _dimension(
+        "ceiling",
+        2.4,
+    )
+
+    # 평면도 단계를 실제로 건너뛰려면 캐시 산출물 경로를 세션에 직접 넣어야 한다.
+    # (/floorplan 을 거치지 않으므로 그 라우트가 해주던 일을 여기서 대신한다)
+    stem = os.path.splitext(
+        safe_name
+    )[0]
+
+    session[
+        "floorplan_layout_file"
+    ] = f"{stem}_model2_layout.json"
+
+    session[
+        "original_floorplan_file"
+    ] = (
+        f"{stem}_model2_floorplan.svg"
+    )
+
+    # STEP 4·5 가 기존 가구 목록을 쓰므로 캐시된 layout 에서 같은 형태로 채운다
+    try:
+        cached_layout_path = resolve_session_generated_file(
+            "floorplan_layout_file"
+        )
+        if not cached_layout_path:
+            raise FileNotFoundError(
+                "캐시된 평면도 layout 파일을 찾을 수 없습니다."
+            )
+        cached_layout = json.loads(
+            Path(cached_layout_path).read_text(
+                encoding="utf-8"
+            )
+        )
+
+        detected = []
+
+        for index, obj in enumerate(
+            cached_layout.get(
+                "objects",
+                [],
+            )
+        ):
+            item_type = str(
+                obj.get("type")
+                or "unknown"
+            ).lower()
+
+            if item_type in {
+                "door",
+                "window",
+                "curtain",
+                "aircon",
+            }:
+                continue
+
+            detected.append(
+                {
+                    "id": (
+                        f"furniture_{index}"
+                    ),
+                    "label": (
+                        translate_furniture_label(
+                            item_type,
+                            obj.get(
+                                "label"
+                            ),
+                            index + 1,
+                        )
+                    ),
+                    "type": item_type,
+                    "source_index": index,
+                }
+            )
+
+        session[
+            "detected_furniture"
+        ] = detected
+
+    except Exception as exc:
+        print(
+            "[dev-use-cached] "
+            "기존 가구 목록 구성 실패: "
+            f"{exc}"
+        )
+
+    target = request.args.get(
+        "to",
+        "3d",
+    ).strip().lower()
+
+    destinations = {
+        "3d": "preview_3d",
+        "floorplan": "floorplan",
+        "step5": "product_selection",
+        "furniture": "furniture_choice",
+        "result": "result",
+    }
+
+    return redirect(
+        url_for(
+            destinations.get(
+                target,
+                "preview_3d",
+            )
+        )
+    )
+
+
+def _preview_style_prompt() -> str:
+    """무드 문장과 태그를 한 줄로 합친다. 입체 SVG와 부품 설계도가 함께 쓴다."""
+    return " ".join(
+        [
+            str(
+                session.get(
+                    "mood_prompt",
+                    "",
+                )
+            ).strip(),
+            " ".join(
+                str(tag)
+                for tag
+                in session.get(
+                    "style_tags",
+                    [],
+                )
+                if str(tag).strip()
+            ),
+        ]
+    ).strip()
+
+
+@app.route("/preview-3d")
+def preview_3d():
+    """최종 배치의 AI 입체 SVG와 정확한 3D 배치 화면을 표시한다."""
+    if (
+        "uploaded_file"
+        not in session
+    ):
+        return redirect(
+            url_for(
+                "upload"
+            )
+        )
+
+    layout_path, layout_source = (
+        resolve_final_layout_path()
+    )
+
+    scene_3d = None
+    scene_error = None
+    svg_render_url = None
+    svg_render_error = None
+
+    if not layout_path:
+        scene_error = (
+            "3D로 표시할 배치 정보가 없습니다. "
+            "평면도를 먼저 생성해 주세요."
+        )
+
+    else:
+        try:
+            layout = json.loads(
+                Path(
+                    layout_path
+                ).read_text(
+                    encoding="utf-8"
+                )
+            )
+
+            plan, _ = (
+                current_room_plan()
+            )
+
+            # build_scene 은 SVG와 같은 배치를 얻기 위해
+            # rule_based_svg 의 파이프라인을 돈다. 그 안에서 방 크기 전역
+            # (ROOM_W/ROOM_H)을 바꾸므로 평면도 생성과 같은 락을 잡는다.
+            with floorplan_generation_lock:
+                scene_3d = (
+                    floorplan_3d
+                    .build_scene(
+                        layout,
+                        plan,
+                    )
+                )
+
+            if not scene_3d.get(
+                "objects"
+            ):
+                scene_3d = None
+                scene_error = (
+                    "배치된 가구가 없어 "
+                    "3D로 보여줄 것이 없습니다."
+                )
+
+            else:
+                # 가구 형태 설계도. 실패해도 빈 dict 라 three.js 가 기존
+                # 빌더로 그대로 그린다. 그래서 여기서 예외를 잡지 않는다.
+                scene_3d[
+                    "furniture_parts"
+                ] = (
+                    gemini_furniture_parts
+                    .generate_furniture_parts(
+                        scene_3d,
+                        GENERATED_DIR,
+                        style_prompt=(
+                            _preview_style_prompt()
+                        ),
+                    )
+                )
+
+            if scene_3d and os.getenv(
+                "ENABLE_GEMINI_SVG_RENDER",
+                "true",
+            ).strip().lower() in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            }:
+                try:
+                    selected_products = (
+                        load_session_json_cache(
+                            "selected_products_file",
+                            default=[],
+                        )
+                    )
+                    if not isinstance(
+                        selected_products,
+                        list,
+                    ):
+                        selected_products = []
+
+                    upload_path = (
+                        Path(UPLOAD_DIR)
+                        / os.path.basename(
+                            str(
+                                session.get(
+                                    "uploaded_file",
+                                    "",
+                                )
+                            )
+                        )
+                    )
+                    style_prompt = (
+                        _preview_style_prompt()
+                    )
+                    render_path = (
+                        gemini_room_svg_render
+                        .generate_room_svg(
+                            scene_3d,
+                            upload_path,
+                            selected_products,
+                            GENERATED_DIR,
+                            style_prompt=style_prompt,
+                        )
+                    )
+                    static_relative = (
+                        render_path.resolve()
+                        .relative_to(
+                            Path(
+                                app.static_folder
+                            ).resolve()
+                        )
+                        .as_posix()
+                    )
+                    svg_render_url = url_for(
+                        "static",
+                        filename=static_relative,
+                    )
+                except Exception as render_exc:
+                    svg_render_error = (
+                        "AI 입체 SVG를 만들지 못해 "
+                        "정확한 3D 배치 화면으로 대신합니다."
+                    )
+                    print(
+                        "[gemini-room-svg] "
+                        f"생성 실패: {render_exc}"
+                    )
+
+        except Exception as exc:
+            scene_error = (
+                "3D 배치 정보를 읽지 "
+                "못했습니다."
+            )
+
+            print(
+                "[preview-3d] "
+                f"씬 생성 실패: {exc}"
+            )
+
+    return render_template(
+        "preview_3d.html",
+        scene_3d=scene_3d,
+        scene_error=scene_error,
+        layout_source=layout_source,
+        svg_render_url=(
+            svg_render_url
+        ),
+        svg_render_error=(
+            svg_render_error
+        ),
+    )
+
+
 @app.route(
     "/my-designs/save",
     methods=["POST"],
 )
 def save_design():
+    """현재 디자인 결과와 관련 캐시 정보를 사용자 계정에 저장한다."""
     if not current_user.is_authenticated:
         return jsonify(
             {
@@ -4633,10 +4615,8 @@ def save_design():
                 }
             ), 400
 
-    selected_products = load_json_cache(
-        session.get(
-            "selected_products_file"
-        ),
+    selected_products = load_session_json_cache(
+        "selected_products_file",
         default=[],
     )
     if not isinstance(
@@ -4709,6 +4689,7 @@ def save_design():
 def item_id_to_query(
     item_id,
 ):
+    """추천 항목 ID를 Google Shopping 검색어로 변환한다."""
     query_map = {
         "chair-001": (
             "원목 의자"
@@ -4758,6 +4739,7 @@ YOLO_MODEL = None
 
 
 def get_yolo_model():
+    """YOLO 가구 탐지 모델을 한 번만 불러와 재사용한다."""
     global YOLO_MODEL
 
     if YOLO_MODEL is None:
@@ -4776,6 +4758,7 @@ def get_yolo_model():
 def detect_furniture_from_image(
     image_path,
 ):
+    """방 이미지에서 YOLO로 가구를 탐지해 정규화된 목록을 반환한다."""
     model = get_yolo_model()
 
     results = model.predict(
@@ -4846,31 +4829,10 @@ def detect_furniture_from_image(
     return detected_items
 
 
-def detected_item_to_query(
-    item_name,
-):
-    query_map = {
-        "침대": "원목 침대",
-        "소파": "패브릭 소파",
-        "TV": "TV 거치대",
-        "의자": "원목 의자",
-        "테이블": (
-            "원목 테이블"
-        ),
-        "식물": (
-            "인테리어 식물"
-        ),
-    }
-
-    return query_map.get(
-        item_name,
-        item_name,
-    )
-
-
 def detected_item_to_type(
     item_name,
 ):
+    """탐지된 한국어 가구 이름을 내부 가구 유형 코드로 변환한다."""
     type_map = {
         "침대": "bed",
         "소파": "unknown",
@@ -4888,6 +4850,7 @@ def detected_item_to_type(
 
 @app.route("/recommend")
 def recommend():
+    """항목 ID에 맞는 쇼핑 상품을 검색해 추천 화면에 표시한다."""
     item_id = request.args.get(
         "item",
         "chair-001",
@@ -4899,7 +4862,7 @@ def recommend():
         )
 
         products = (
-            search_naver_shopping(
+            search_serpapi_shopping(
                 query=query,
                 display=5,
             )
@@ -4910,7 +4873,7 @@ def recommend():
                 {
                     "ok": False,
                     "error": (
-                        "네이버 쇼핑 검색 "
+                        "Google Shopping 검색 "
                         "결과가 없습니다."
                     ),
                 }
@@ -5000,123 +4963,6 @@ def recommend():
                 "ok": False,
                 "error": (
                     "상품 추천 API 호출 중 "
-                    "오류가 발생했습니다."
-                ),
-            }
-        ), 500
-
-
-@app.route(
-    "/recommend-from-upload"
-)
-def recommend_from_upload():
-    uploaded_file = (
-        session.get(
-            "uploaded_file"
-        )
-    )
-
-    if not uploaded_file:
-        return jsonify(
-            {
-                "ok": False,
-                "error": (
-                    "업로드된 이미지가 없습니다. "
-                    "먼저 사진을 업로드해 주세요."
-                ),
-            }
-        ), 400
-
-    image_path = os.path.join(
-        UPLOAD_DIR,
-        uploaded_file,
-    )
-
-    if not os.path.exists(
-        image_path
-    ):
-        return jsonify(
-            {
-                "ok": False,
-                "error": (
-                    "업로드된 이미지 파일을 "
-                    "찾을 수 없습니다."
-                ),
-            }
-        ), 404
-
-    try:
-        detected_items = (
-            detect_furniture_from_image(
-                image_path
-            )
-        )
-
-        if not detected_items:
-            return jsonify(
-                {
-                    "ok": False,
-                    "error": (
-                        "이미지에서 가구를 "
-                        "탐지하지 못했습니다."
-                    ),
-                }
-            ), 404
-
-        recommendations = {}
-
-        for item_name in detected_items:
-            query = (
-                detected_item_to_query(
-                    item_name
-                )
-            )
-
-            products = (
-                search_naver_shopping(
-                    query=query,
-                    display=3,
-                )
-            )
-
-            recommendations[
-                item_name
-            ] = {
-                "search_query": (
-                    query
-                ),
-                "products": (
-                    products
-                ),
-            }
-
-        return jsonify(
-            {
-                "ok": True,
-                "uploaded_file": (
-                    uploaded_file
-                ),
-                "detected_items": (
-                    detected_items
-                ),
-                "recommendations": (
-                    recommendations
-                ),
-            }
-        )
-
-    except Exception as exc:
-        print(
-            "업로드 이미지 기반 "
-            "추천 API 오류:",
-            exc,
-        )
-
-        return jsonify(
-            {
-                "ok": False,
-                "error": (
-                    "업로드 이미지 기반 추천 중 "
                     "오류가 발생했습니다."
                 ),
             }

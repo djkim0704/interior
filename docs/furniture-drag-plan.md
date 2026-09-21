@@ -1,5 +1,12 @@
 # 평면도 가구 드래그 이동 — 설계 검토
 
+> **상태: 구현 완료.** 이 문서는 착수 전 설계 검토 기록으로 남겨둔 것이며 현행 코드의
+> 사양서가 아니다. 실제 구현은 `frontend/static/js/floorplan_drag.js`,
+> `frontend/static/js/floorplan_edit.js`, `model2/web_floorplan.py`의
+> `prepare_floorplan_edit_markup` / `apply_floorplan_edits_to_layout`,
+> 그리고 `backend/app.py`의 `save_floorplan_edit` 라우트에 있다.
+> 아래 본문의 줄 번호·함수 이름은 작성 당시 기준이라 지금과 다를 수 있다.
+
 > 목표: 사용자가 생성된 **2D 평면도(SVG)** 위에서 가구를 **드래그해 위치를 옮기고**,
 > 옮긴 배치를 저장·재렌더할 수 있게 한다.
 >

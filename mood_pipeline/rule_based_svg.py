@@ -12,7 +12,18 @@ LAYOUT_OBJECT_TYPES = [
     "bed", "desk", "table", "low_table", "shelf", "cabinet",
     "chair", "floor_chair", "stool", "rug", "mirror", "lamp",
     "plant", "door", "window", "unknown",
+    # 구매 가능한 종류(backend PURCHASE_LABELS)와 맞추기 위해 추가.
+    # 예전에는 소파를 구매해도 어휘에 없어서 unknown 박스로 그려졌다.
+    "sofa", "wardrobe", "dresser", "bench",
+    # 방 사진에 자주 나오는 생활가전·가구
+    "tv", "fridge", "aircon", "washer",
+    "vanity", "nightstand", "desk_chair", "curtain",
 ]
+
+# 벽·바닥에 고정돼 드래그·격자 스냅에서 제외하는 요소
+FIXED_TYPES = {
+    "window", "door", "rug", "curtain", "aircon", "tv",
+}
 
 # 프롬프트는 코드에 하드코딩하지 않고 프로젝트 루트 prompts/*.txt에서 읽어온다.
 # rule_based_svg.py는 mood_pipeline/ 안에 있으므로 부모의 부모가 프로젝트 루트.
@@ -80,6 +91,18 @@ KOREAN_LABELS = {
     "door": "문",
     "window": "창문",
     "unknown": "가구",
+    "sofa": "소파",
+    "wardrobe": "옷장",
+    "dresser": "서랍장",
+    "bench": "벤치",
+    "tv": "TV",
+    "fridge": "냉장고",
+    "aircon": "에어컨",
+    "washer": "세탁기",
+    "vanity": "화장대",
+    "nightstand": "협탁",
+    "desk_chair": "책상 의자",
+    "curtain": "커튼",
 }
 
 
@@ -105,6 +128,29 @@ LABEL_ALIASES = {
     "plant": "식물",
     "door": "문",
     "window": "창문",
+    "sofa": "소파",
+    "couch": "소파",
+    "two seater sofa": "2인 소파",
+    "wardrobe": "옷장",
+    "closet": "옷장",
+    "dresser": "서랍장",
+    "chest of drawers": "서랍장",
+    "bench": "벤치",
+    "tv": "TV",
+    "television": "TV",
+    "fridge": "냉장고",
+    "refrigerator": "냉장고",
+    "aircon": "에어컨",
+    "air conditioner": "에어컨",
+    "washer": "세탁기",
+    "washing machine": "세탁기",
+    "vanity": "화장대",
+    "dressing table": "화장대",
+    "desk chair": "책상 의자",
+    "office chair": "책상 의자",
+    "curtain": "커튼",
+    "curtains": "커튼",
+    "blind": "블라인드",
 }
 
 STD_SIZE: dict[str, tuple[int, int]] = {
@@ -124,6 +170,20 @@ STD_SIZE: dict[str, tuple[int, int]] = {
     "window": (240, 20),
     "door": (25, 170),
     "unknown": (110, 75),
+    # 구매 가능 종류
+    "sofa": (250, 120),
+    "wardrobe": (170, 118),
+    "dresser": (140, 105),
+    "bench": (170, 82),
+    # 생활가전·가구 (tv·aircon·curtain 은 벽에 붙는 얇은 요소)
+    "tv": (190, 26),
+    "fridge": (110, 105),
+    "aircon": (130, 26),
+    "washer": (100, 100),
+    "vanity": (160, 92),
+    "nightstand": (80, 80),
+    "desk_chair": (86, 86),
+    "curtain": (240, 20),
 }
 
 ZONE_POS: dict[str, tuple[float, float]] = {
@@ -143,6 +203,18 @@ ZONE_POS: dict[str, tuple[float, float]] = {
     "door": (0.98, 0.43),
     "plant": (0.88, 0.55),
     "unknown": (0.50, 0.50),
+    "sofa": (0.50, 0.72),
+    "wardrobe": (0.14, 0.18),
+    "dresser": (0.30, 0.16),
+    "bench": (0.50, 0.88),
+    "tv": (0.50, 0.05),
+    "fridge": (0.90, 0.12),
+    "aircon": (0.76, 0.04),
+    "washer": (0.90, 0.88),
+    "vanity": (0.16, 0.60),
+    "nightstand": (0.06, 0.34),
+    "desk_chair": (0.70, 0.66),
+    "curtain": (0.44, 0.03),
 }
 
 TYPE_PRIORITY: dict[str, int] = {
@@ -161,6 +233,19 @@ TYPE_PRIORITY: dict[str, int] = {
     "window": 5,
     "door": 5,
     "plant": 5,
+    # 0=바닥에 깔리는 것, 숫자가 클수록 나중에(위에) 그린다
+    "sofa": 1,
+    "wardrobe": 3,
+    "dresser": 3,
+    "fridge": 3,
+    "washer": 3,
+    "vanity": 2,
+    "bench": 4,
+    "nightstand": 4,
+    "desk_chair": 4,
+    "tv": 5,
+    "aircon": 5,
+    "curtain": 5,
 }
 
 LayoutDict = dict[str, Any]
@@ -191,6 +276,28 @@ def norm_type(t: str | None) -> str:
         "bookshelf": "shelf",
         "carpet": "rug",
         "table_lamp": "lamp",
+        # Gemini·YOLO 가 내놓는 표현을 어휘로 흡수한다
+        "couch": "sofa",
+        "settee": "sofa",
+        "closet": "wardrobe",
+        "armoire": "wardrobe",
+        "chest_of_drawers": "dresser",
+        "drawers": "dresser",
+        "television": "tv",
+        "tv_set": "tv",
+        "monitor": "tv",
+        "refrigerator": "fridge",
+        "air_conditioner": "aircon",
+        "ac": "aircon",
+        "washing_machine": "washer",
+        "dressing_table": "vanity",
+        "makeup_table": "vanity",
+        "bedside_table": "nightstand",
+        "side_table": "nightstand",
+        "office_chair": "desk_chair",
+        "curtains": "curtain",
+        "blind": "curtain",
+        "blinds": "curtain",
     }
     t = aliases.get(t, t)
     return t if t in STD_SIZE else "unknown"
@@ -272,12 +379,6 @@ def display_label(
 
 def clamp(v: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, v))
-
-
-def overlap(a: Rect, b: Rect, pad: float = 10) -> bool:
-    ax, ay, aw, ah = a
-    bx, by, bw, bh = b
-    return not (ax + aw + pad < bx or bx + bw + pad < ax or ay + ah + pad < by or by + bh + pad < ay)
 
 
 def _is_percent_coords(obj: dict[str, Any]) -> bool:
@@ -993,7 +1094,7 @@ def grid_align(objs: list[PlacedObject], grid: int = GRID_SNAP) -> list[PlacedOb
     """가구를 격자에 살짝 스냅해 정렬감(틀)을 준다. 벽 고정 축은 건드리지 않음.
     (스냅 후 미세 겹침이 생길 수 있어 render_svg에서 resolve_overlaps를 한 번 더 돌린다.)"""
     for o in objs:
-        if o["type"] in ("rug", "window", "door"):
+        if o["type"] in FIXED_TYPES:
             continue
         wall = o.get("wall")
         # 벽에 붙은 축(수직축)은 스냅하지 않아 벽면 밀착을 유지
@@ -1247,6 +1348,19 @@ ISO_DRAWERS: dict[str, Any] = {
     "floor_chair": iso_round,
     "window": window,
     "door": door,
+    # 새 타입은 전용 그림 없이 기존 프리미티브를 재사용한다
+    "sofa": iso_box,
+    "wardrobe": iso_box,
+    "dresser": iso_box,
+    "bench": iso_box,
+    "tv": iso_box,
+    "fridge": iso_box,
+    "aircon": iso_box,
+    "washer": iso_box,
+    "vanity": iso_box,
+    "nightstand": iso_box,
+    "desk_chair": iso_round,
+    "curtain": iso_flat,
 }
 
 
@@ -1388,9 +1502,9 @@ def draw_obj(
         )
     )
 
-    # 드래그 이동용 식별자·플래그. 벽 고정 요소(창/문/러그)는 드래그 대상에서 제외.
+    # 드래그 이동용 식별자·플래그. 벽·바닥 고정 요소는 드래그 대상에서 제외.
     idx = obj.get("idx")
-    draggable = obj["type"] not in ("window", "door", "rug")
+    draggable = obj["type"] not in FIXED_TYPES
     data_attrs = f' data-source="{source}"'
     if idx is not None:
         data_attrs += f' data-index="{idx}"'
@@ -1517,10 +1631,17 @@ def fit_walls(objs: list[PlacedObject], edge: int = 40, pad: int = 12) -> list[P
     return objs
 
 
-def render_svg(
+def resolve_placement(
     layout: LayoutDict,
-    title: str = "AI 인테리어 평면도",
-) -> str:
+) -> tuple[LayoutDict, list[PlacedObject], dict[str, int]]:
+    """layout → 최종 배치. SVG가 실제로 그리는 좌표를 그대로 돌려준다.
+
+    layout 의 x·y·w·h 는 그대로 그려지지 않는다. 표준 크기 대체(_gemini_size),
+    벽 맞춤, 자동 패킹, 겹침 해소, 격자 스냅을 거친 결과가 최종 좌표다.
+    3D 뷰어도 이 함수를 써서 SVG와 같은 배치를 그린다(따로 계산하면 어긋난다).
+
+    반환: (정규화된 layout, 배치된 객체들(픽셀 좌표), 캔버스 크기)
+    """
     layout = coerce_layout_v3(
         layout
     )
@@ -1573,6 +1694,33 @@ def render_svg(
 
     objects = resolve_overlaps(
         aligned
+    )
+
+    # ROOM_W·ROOM_H 는 _set_canvas 가 방 비율에 따라 바꾸는 전역이다.
+    # 호출자가 오래된 값을 읽지 않도록 지금 값을 함께 돌려준다.
+    canvas = {
+        "room_w": ROOM_W,
+        "room_h": ROOM_H,
+        "margin_x": MARGIN_X,
+        "margin_y": MARGIN_Y,
+    }
+
+    return layout, objects, canvas
+
+
+def render_svg(
+    layout: LayoutDict,
+    title: str = "AI 인테리어 평면도",
+) -> str:
+    layout, objects, _canvas = (
+        resolve_placement(
+            layout
+        )
+    )
+
+    room_data = (
+        layout.get("room")
+        or {}
     )
 
     object_svg = "\n".join(

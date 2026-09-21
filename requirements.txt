@@ -15,6 +15,7 @@ python-dotenv
 google-genai
 ultralytics          # YOLO (backend/app.py의 가구 탐지)
 numpy
+pandas               # mood_search_v1 라이브러리 빌드·라벨링의 metadata.csv
 matplotlib
 scikit-learn
 umap-learn
@@ -24,3 +25,6 @@ tqdm
 # torch/torchvision은 위 ultralytics가 이미 설치함
 transformers         # CLIP 이미지·텍스트 임베딩
 deep-translator      # 한글 프롬프트 → 영어 번역 (CLIP은 영어 모델)
+
+# --- 테스트 ---
+pytest               # tests/ 실행. 테스트는 실제 API를 호출하지 않는다

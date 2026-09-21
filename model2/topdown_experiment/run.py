@@ -276,12 +276,10 @@ def analyze_room(
         config=types.GenerateContentConfig(
             response_mime_type="application/json",
             temperature=0.1,
-            max_output_tokens=4096,
-            # thinking 토큰도 max_output_tokens를 함께 소비한다.
-            # 켜두면 추론이 예산을 다 써서 JSON이 중간에 잘린다
-            # (finish_reason=MAX_TOKENS → json.loads 파싱 실패).
-            # 이 작업은 구조화된 추출이라 thinking 이득이 없어 끈다.
-            thinking_config=types.ThinkingConfig(thinking_budget=0),
+            # thinking 계열 모델은 추론 토큰도 이 한도에서 깎아간다.
+            # 4096이면 객체가 많은 방에서 JSON이 잘려 json.loads가 깨진다.
+            max_output_tokens=8192,
+
         ),
     )
     if not response.text:

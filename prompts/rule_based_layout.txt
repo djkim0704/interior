@@ -18,7 +18,7 @@ JSON schema:
   "camera_view": "e.g. camera faces the back wall; windows on the left (west) wall",
   "objects": [
     {
-      "type": "one of: bed, desk, table, low_table, shelf, cabinet, chair, floor_chair, stool, rug, mirror, lamp, plant, door, window, unknown",
+      "type": "one of: bed, desk, table, low_table, shelf, cabinet, chair, floor_chair, stool, rug, mirror, lamp, plant, door, window, sofa, wardrobe, dresser, bench, tv, fridge, aircon, washer, vanity, nightstand, desk_chair, curtain, unknown",
       "label": "short English label",
       "x": 0.0, "y": 0.0, "w": 0.1, "h": 0.1,
       "wall": "left|right|top|bottom|none",
@@ -40,6 +40,12 @@ Rules:
   Estimate true relative sizes, e.g. a large bed ≈ w 0.30–0.45 / h 0.30–0.45,
   a low table ≈ 0.18–0.28, a chair/stool ≈ 0.08–0.12. Do NOT return a constant size for everything.
 - Low seating around a low table: use type low_table + floor_chair (not desk/chair).
+- Use the specific type when you can see it, not "unknown": a couch is sofa, a tall clothes
+  cabinet is wardrobe, a low chest is dresser, a bedside table is nightstand, a rolling
+  desk chair is desk_chair, a makeup table is vanity.
+- tv, aircon and curtain hang on a wall: give them a wall (left|right|top|bottom),
+  a small h (≈0.02–0.04) and place x or y at that edge.
+- fridge and washer are floor appliances with a roughly square footprint (≈0.10–0.16).
 - Place floor_chair on north/south/east/west of the low_table center when visible.
 - Items against a wall: set wall to left|right|top|bottom and place x or y near that edge.
 - Windows: at most ONE window object per wall; w≈0.3–0.5, h≈0.03; wall must match the actual wall.
