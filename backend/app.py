@@ -145,6 +145,80 @@ app.register_blueprint(auth_bp)
 with app.app_context():
     db.create_all()
 
+
+def _ensure_mood_library():
+    """무드 라이브러리가 없으면 첫 기동 때 한 번 만든다.
+
+    clone 직후에는 mood_library/ 가 용량 때문에 비어 있다. 그대로 두면
+    /mood-search 가 index.json 을 못 찾아 500 만 계속 뱉는데, 원인이
+    코드가 아니라 "파이프라인을 아직 안 돌렸다" 라서 로그만 봐서는
+    알아차리기 어렵다. 그래서 기동 시점에 직접 만든다.
+
+    CLIP 로컬 추론만 쓰므로 Gemini 호출량(RPD)에는 영향이 없다.
+    """
+    index_path = (
+        MOOD_LIBRARY_DIR
+        / "index.json"
+    )
+
+    if index_path.exists():
+        return
+
+    # 원본 이미지가 없으면 만들 방법이 없다. 무드 검색만 죽고 평면도·상품
+    # 추천은 멀쩡하므로, 기동을 막지 말고 안내만 남긴다.
+    if not MOOD_IMAGE_ROOT.exists() or not any(
+        MOOD_IMAGE_ROOT.iterdir()
+    ):
+        print(
+            "[mood] images/final 이 비어 있어 "
+            "무드 라이브러리를 건너뛴다. "
+            "무드 검색만 비활성화된다."
+        )
+        return
+
+    # CPU 기준 약 4~5분. 무거운 pandas·sklearn·umap 을 여기서 처음 끌어오므로
+    # import 도 함수 안에 둔다(mood_search_v1/__init__.py 의 지연 로딩과 같은 이유).
+    print(
+        "[mood] 무드 라이브러리가 없어 "
+        "새로 만든다. CPU 기준 4~5분 걸린다."
+    )
+
+    try:
+        from mood_search_v1 import (
+            run_build_library,
+            run_clustering,
+            run_embedding,
+            run_labeling,
+        )
+
+        run_embedding()
+        run_clustering()
+        run_labeling()
+        run_build_library()
+
+        print(
+            "[mood] 무드 라이브러리 생성 완료."
+        )
+
+    except Exception as exc:
+        # 빌드가 실패해도 나머지 기능은 살아 있어야 한다.
+        print(
+            "[mood] 무드 라이브러리 생성 실패: "
+            f"{exc}"
+        )
+
+
+# debug=True 의 리로더는 프로세스를 두 번 띄운다. 가드가 없으면 4~5분짜리
+# 빌드가 두 번 돈다. WERKZEUG_RUN_MAIN 은 리로더가 띄운 자식에만 있다.
+if (
+    not app.debug
+    or os.environ.get(
+        "WERKZEUG_RUN_MAIN"
+    )
+    == "true"
+):
+    _ensure_mood_library()
+
 app.json.ensure_ascii = False
 
 # 같은 서버 프로세스에서 평면도 Gemini 요청이 동시에 실행되면 낮은 RPM
