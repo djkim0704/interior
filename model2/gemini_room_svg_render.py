@@ -215,6 +215,13 @@ def _sanitize_svg(svg_text: str) -> str:
         "radialGradient", "stop", "pattern", "clipPath", "mask", "filter",
         "feGaussianBlur", "feOffset", "feColorMatrix", "feBlend",
         "feMerge", "feMergeNode", "feFlood", "feComposite",
+        # 위 프롬프트가 그림자·질감을 "filters" 로 그리라고 지시하는데 정작
+        # 대표 필터가 빠져 있어서, 모델이 시킨 대로 그리면 검증에서 막혔다.
+        # feDropShadow 는 feGaussianBlur+feOffset+feMerge 의 축약형이라
+        # 이미 허용된 조합과 표현력이 같다. 나머지도 순수 그래픽 연산이라
+        # 스크립트·외부 리소스와 무관하다(외부 참조가 가능한 feImage 는 제외).
+        "feDropShadow", "feTurbulence", "feDisplacementMap",
+        "feMorphology", "feTile",
     }
     elements = list(root.iter())
     if len(elements) > 1200:
@@ -350,6 +357,12 @@ def generate_room_svg(
         raise FileNotFoundError("원본 방 사진을 찾을 수 없습니다.")
     model = (
         model
+        # GEMINI_ANALYSIS_MODEL 은 평면도 생성까지 함께 쓰는 값이라, 이 렌더만
+        # 가벼운 모델로 내리려고 그걸 건드리면 평면도 SVG 품질까지 같이 떨어진다.
+        # (평면도는 layout id 와 <g id> 를 맞춰야 해서 지시 준수력이 중요하다.)
+        # 그래서 이 렌더 전용 값을 먼저 본다. 입체 렌더는 장식용이라 id 계약이 없고
+        # 실패해도 three.js 화면으로 대체되므로 한도가 넉넉한 모델이 낫다.
+        or os.getenv("GEMINI_ROOM_SVG_MODEL", "").strip()
         or os.getenv("GEMINI_ANALYSIS_MODEL", "").strip()
         or DEFAULT_MODEL
     )
@@ -428,6 +441,13 @@ def generate_room_svg(
             temporary_path.replace(output_path)
             failure_path.unlink(missing_ok=True)
             return output_path
-        except Exception:
-            failure_path.write_text(str(int(time.time())), encoding="utf-8")
+        except Exception as exc:
+            # 타임스탬프만 남기면, 쿨다운 동안 호출부가 받는 메시지가
+            # "재호출을 보류합니다" 뿐이라 정작 원인이 로그에서 밀려 사라진다.
+            # 사유를 함께 적어 두면 파일만 봐도 원인을 알 수 있다.
+            # 쿨다운 판정은 st_mtime 기준이라 내용이 늘어도 영향이 없다.
+            failure_path.write_text(
+                f"{int(time.time())}\n{type(exc).__name__}: {exc}",
+                encoding="utf-8",
+            )
             raise
