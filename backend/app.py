@@ -64,6 +64,7 @@ from model2 import (
 )
 from model2 import floorplan_3d
 from model2 import gemini_room_svg_render
+from model2 import gemini_furniture_parts
 from model2.gemini_retry import (
     GeminiBusyError,
     api_status_code,
@@ -4345,6 +4346,29 @@ def dev_use_cached():
     )
 
 
+def _preview_style_prompt() -> str:
+    """무드 문장과 태그를 한 줄로 합친다. 입체 SVG와 부품 설계도가 함께 쓴다."""
+    return " ".join(
+        [
+            str(
+                session.get(
+                    "mood_prompt",
+                    "",
+                )
+            ).strip(),
+            " ".join(
+                str(tag)
+                for tag
+                in session.get(
+                    "style_tags",
+                    [],
+                )
+                if str(tag).strip()
+            ),
+        ]
+    ).strip()
+
+
 @app.route("/preview-3d")
 def preview_3d():
     """최종 배치의 AI 입체 SVG와 정확한 3D 배치 화면을 표시한다."""
@@ -4408,7 +4432,23 @@ def preview_3d():
                     "3D로 보여줄 것이 없습니다."
                 )
 
-            elif os.getenv(
+            else:
+                # 가구 형태 설계도. 실패해도 빈 dict 라 three.js 가 기존
+                # 빌더로 그대로 그린다. 그래서 여기서 예외를 잡지 않는다.
+                scene_3d[
+                    "furniture_parts"
+                ] = (
+                    gemini_furniture_parts
+                    .generate_furniture_parts(
+                        scene_3d,
+                        GENERATED_DIR,
+                        style_prompt=(
+                            _preview_style_prompt()
+                        ),
+                    )
+                )
+
+            if scene_3d and os.getenv(
                 "ENABLE_GEMINI_SVG_RENDER",
                 "true",
             ).strip().lower() in {
@@ -4441,25 +4481,9 @@ def preview_3d():
                             )
                         )
                     )
-                    style_prompt = " ".join(
-                        [
-                            str(
-                                session.get(
-                                    "mood_prompt",
-                                    "",
-                                )
-                            ).strip(),
-                            " ".join(
-                                str(tag)
-                                for tag
-                                in session.get(
-                                    "style_tags",
-                                    [],
-                                )
-                                if str(tag).strip()
-                            ),
-                        ]
-                    ).strip()
+                    style_prompt = (
+                        _preview_style_prompt()
+                    )
                     render_path = (
                         gemini_room_svg_render
                         .generate_room_svg(

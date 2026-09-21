@@ -85,7 +85,12 @@ GEMINI_SVG_MODEL=gemini-3.6-flash           # 2단계 평면도 SVG (무료 RPD 
 FLOORPLAN_CACHE=1                           # 평면도 캐시 (30분 TTL)
 ENABLE_GEMINI_SVG_RENDER=true               # /preview-3d 의 AI 입체 SVG
 GEMINI_ROOM_SVG_MODEL=gemini-3.1-flash-lite # 입체 SVG 전용 (RPD 500)
+GEMINI_FURNITURE_PARTS_MODEL=               # three.js 가구 형태 설계도 (7.9)
 ```
+
+> `GEMINI_ROOM_SVG_MODEL` 에 `-lite` 계열을 두면 입체 SVG 가 원근도 그림자도
+> 없는 납작한 도형으로 나온다. 실패가 아니라 "성공했지만 빈약한" 결과라
+> 폴백도 걸리지 않는다. 품질이 필요하면 `gemini-3.6-flash` 로 올린다.
 
 > **주의** `.env`는 Flask 자동 리로더의 감시 대상이 아니다. 값을 바꾸면
 > **서버를 직접 재시작해야** 반영된다. `.py` 파일은 저장만 하면 자동 리로드된다.
@@ -158,6 +163,7 @@ model2/
   topdown_experiment/run.py  1단계: 사진 → 배치 JSON
   gemini_svg_experiment.py   2단계: 배치 JSON → 평면도 SVG
   gemini_room_svg_render.py  /preview-3d 의 입체 렌더 SVG
+  gemini_furniture_parts.py  three.js 가구 형태 설계도 (7.9)
   gemini_retry.py            Gemini 503/429 재시도 공통 모듈
   floorplan_3d.py            배치 JSON → three.js 씬 데이터
 mood_pipeline/, mood_search_v1/   무드 이미지 분석·검색
@@ -210,15 +216,19 @@ frontend/templates/, static/      Jinja 템플릿과 정적 파일
 
 ### 7.3 /preview-3d 의 "3D"는 두 가지다
 
-`/preview-3d`에는 성격이 다른 두 화면이 있다.
+`/preview-3d`에는 성격이 다른 두 화면이 **위아래로 나란히** 뜬다. 택일이
+아니다. 템플릿의 `{% if svg_render_url %}` 블록은 위쪽 SVG만 감싸고,
+three.js 뷰어는 그 바깥에 있어 항상 렌더된다.
 
-| | 만드는 주체 | 실패하면 |
-|---|---|---|
-| **3D 배치 화면** | 로컬 three.js (`floorplan_3d.py` → `scene.json`) | — |
-| **AI 입체 SVG** | Gemini (`gemini_room_svg_render.py`) | 위 화면으로 대체 |
+| | 위치 | 만드는 주체 | 실패하면 |
+|---|---|---|---|
+| **AI 입체 SVG** | 위 | Gemini (`gemini_room_svg_render.py`) | 블록만 사라짐 |
+| **3D 배치 화면** | 아래 | 로컬 three.js (`floorplan_3d.py` → `scene.json`) | — |
 
-three.js 씬은 **Gemini가 만들지 않는다.** 배치 JSON에서 결정론적으로
+three.js 씬의 **배치**는 Gemini가 만들지 않는다. 배치 JSON에서 결정론적으로
 계산하므로 좌표·치수가 정확하고 API 한도와 무관하게 항상 동작한다.
+
+다만 **가구의 형태**는 Gemini가 거들 수 있다(7.9). 배치와 형태는 별개다.
 
 > AI 입체 SVG를 만들지 못해 정확한 3D 배치 화면으로 대신합니다.
 
@@ -278,6 +288,41 @@ venv\Scripts\python.exe -m py_compile backend/app.py   # 저장 직후 확인
 `/furniture-choice`와 `/product-selection`은 지금 `/result`로 리다이렉트만
 한다. 원래 코드는 그 아래에 그대로 살아 있고, 각 함수 맨 위의 `return` 두
 줄만 지우면 복구된다. `backend/app.py`에서 `[임시]` 주석으로 표시해 뒀다.
+
+### 7.9 three.js 가구 형태는 Gemini 설계도로 덮인다
+
+three.js 의 가구 모양은 원래 `floorplan_3d.js` 의 `BUILDERS` 에 손으로 짜
+넣은 상자 조합이다(27종). 종류가 늘수록 품질 편차가 커서, Gemini 에게 형태를
+**부품 목록으로** 받아 덮어쓰는 경로를 뒀다(`gemini_furniture_parts.py`).
+
+완성된 그림을 Gemini 에게 그리게 하는 입체 SVG(7.3)와 혼동하지 말 것. 이쪽은
+그림이 아니라 좌표 JSON 만 받는다. 가벼운 작업이라 무료 등급 모델로도
+생성되고, 재질·조명·원근은 three.js 가 GPU 로 처리한다.
+
+```
+배치 JSON → Gemini: 종류별 부품 목록 → three.js: buildFromParts()
+                                        없으면 BUILDERS 로 폴백
+```
+
+주의할 점이 셋 있다.
+
+**설계도는 전제 조건이 아니다.** 생성이 실패하면 예외를 올리지 않고 빈
+dict 를 반환한다. three.js 는 그대로 기존 `BUILDERS` 로 그린다. 그래서
+실패해도 화면이 나빠지지 않고, 안내 문구도 뜨지 않는다. 대신 조용히 넘어가므로
+서버 콘솔의 `[gemini-furniture-parts] 생성 실패:` 줄을 봐야 원인을 알 수 있다.
+
+**좌표는 미터가 아니라 비율이다.** 가구 자체 치수에 대한 0~1 값이라 방 크기나
+배치가 달라져도 같은 설계도를 재사용한다. 그래서 캐시 키에 배치가 들어가지
+않고, 배치를 바꿔가며 여러 번 들어와도 호출이 늘지 않는다. 규약(원점, y 는
+밑면 기준, 뒷면이 -z)은 `gemini_furniture_parts.py` 의 docstring 에 있고
+`floorplan_3d.js` 의 `box()`/`cylinder()` 와 맞춰야 한다.
+
+**부품이 빈 항목은 버려야 한다.** `{"parts": []}` 를 그대로 넘기면 three.js 가
+"설계도가 있다"고 믿고 `BUILDERS` 를 건너뛰어 **가구가 통째로 사라진다.**
+`_coerce()` 에서 걸러내고 있으니 그 검증을 약화시키지 말 것.
+
+모델은 `GEMINI_FURNITURE_PARTS_MODEL` 로 따로 지정한다. 비우면
+`GEMINI_ANALYSIS_MODEL` 을 따른다.
 
 ---
 
