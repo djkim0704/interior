@@ -37,7 +37,11 @@ from PIL import Image
 from .gemini_furniture_parts import SKIP_TYPES, _client, _object_image
 from .gemini_retry import call_with_retry
 
-VIEWS_VERSION = "furniture-views-v1"
+# v2: 2D 평면도의 Gemini SVG 그림을 기준으로 그리고, 방 사진을 캐시 키에 넣는다.
+# v1 캐시는 사진 속 위치가 없는 가구끼리 방이 달라도 같은 그림을 재사용할 수 있었다.
+VIEWS_VERSION = "furniture-views-v2"
+# 프롬프트에 넣을 SVG 길이 상한(문자). 너무 길면 토큰만 쓰고 그림 품질은 같다
+SVG_REFERENCE_MAX_CHARS = 12000
 VIEWS_DIR = "gemini_furniture_views_v1"
 DEFAULT_IMAGE_MODEL = "gemini-2.5-flash-image"
 FAILURE_COOLDOWN_SECONDS = 10 * 60
@@ -48,12 +52,13 @@ MAX_SIDE_PX = 768
 _LOCK = threading.Lock()
 
 FRONT_PROMPT = """
-Draw ONE piece of furniture as a polished 3D product render, matching the reference
-photo exactly (same design, proportions, colors, materials, legs and details).
+Draw ONE piece of furniture as a polished 3D product render.
+
+{reference_note}
 
 Object: {label} ({kind}), real size W {w:.2f} m x D {d:.2f} m x H {h:.2f} m.
 Features: {attrs}
-
+{svg_block}
 View: three-quarter view from the FRONT, camera about 30 degrees above the floor,
 looking slightly down, the front of the object facing the viewer. Orthographic-like,
 minimal perspective. The whole object fully visible, centered, filling most of the image.
@@ -67,9 +72,54 @@ seen from its {side}: the camera has moved {turn} around the object, still about
 30 degrees above the floor, looking slightly down.
 
 Object: {label} ({kind}), real size W {w:.2f} m x D {d:.2f} m x H {h:.2f} m.
+{svg_block}
 The whole object fully visible, centered, filling most of the image.
 Background: pure flat white (#FFFFFF), no floor, no shadow, no props, no text.
 """.strip()
+
+SVG_BLOCK = """
+Top-down illustration of THIS exact item from the floor plan (SVG, viewed from
+directly above, back of the object at the top). It was drawn from the room photo and
+is the primary reference: keep its colors, patterns, cushions, frame, legs and other
+details, and turn it into the 3D view described below.
+```svg
+{svg}
+```
+""".rstrip()
+
+
+def reference_note(has_svg: bool, photo_kind: str | None) -> str:
+    """어떤 참고 자료를 무엇으로 봐야 하는지 알려 준다."""
+    lines = []
+    if has_svg:
+        lines.append("Match the floor-plan SVG below (same item) for colors, shapes and details.")
+    if photo_kind == "crop":
+        lines.append("The attached photo is a crop of the real room around this item; match it exactly.")
+    elif photo_kind == "room":
+        lines.append(
+            "The attached photo shows the whole real room; find this item in it and match its "
+            "design, colors and materials exactly. Draw only this one item."
+        )
+    elif photo_kind == "product":
+        lines.append("The attached photo is the product itself; match its design exactly.")
+    return " ".join(lines) or "Match the description exactly."
+
+
+def object_svg(artwork: dict[str, Any] | None, object_id: str) -> str | None:
+    """2D 평면도의 그 가구 그림(Gemini SVG)을 독립된 SVG 문서로 만든다."""
+    if not artwork:
+        return None
+    drawn = (artwork.get("objects") or {}).get(str(object_id))
+    if not drawn or not drawn.get("markup"):
+        return None
+    width = float(drawn.get("w") or 240)
+    height = float(drawn.get("h") or 240)
+    svg = (
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width:.0f} {height:.0f}">'
+        f'<defs>{artwork.get("defs") or ""}</defs>{drawn["markup"]}</svg>'
+    )
+    return svg if len(svg) <= SVG_REFERENCE_MAX_CHARS else svg[:SVG_REFERENCE_MAX_CHARS]
+
 
 TURNS = {
     "right": ("RIGHT side", "90 degrees to the object's right"),
@@ -154,9 +204,34 @@ def _image_from(response: Any) -> bytes:
     raise RuntimeError("이미지 모델이 그림을 반환하지 않았습니다. " + " ".join(notes)[:200])
 
 
-def _item(obj: dict[str, Any], room_photo: Path | None, image_dir: Path) -> dict[str, Any]:
+def _room_photo_bytes(room_photo: Path | None) -> bytes | None:
+    if room_photo is None or not Path(room_photo).is_file():
+        return None
+    from .gemini_reanalyze import _crop
+
+    with Image.open(room_photo) as source:
+        return _crop(source.convert("RGB"), None, max_side=1280)
+
+
+def _item(
+    obj: dict[str, Any],
+    room_photo: Path | None,
+    image_dir: Path,
+    artwork: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     reference = _object_image(obj, room_photo, image_dir)
+    if reference is not None:
+        photo_kind = "product" if obj.get("image_file") else "crop"
+    else:
+        # 사진 속 위치(photo_box)가 없는 옛 분석이면 방 사진 전체를 보낸다. 아무것도 안
+        # 보내면 다른 방의 같은 이름 가구와 구분되지 않아 엉뚱한 그림이 나온다
+        reference = _room_photo_bytes(room_photo)
+        photo_kind = "room" if reference is not None else None
+    svg = object_svg(artwork, str(obj["id"])) if not obj.get("image_file") else None
     return {
+        "svg": svg,
+        "svg_digest": hashlib.sha256(svg.encode("utf-8")).hexdigest()[:16] if svg else None,
+        "photo_kind": photo_kind,
         "id": str(obj["id"]),
         "kind": str(obj.get("type") or ""),
         "label": str(obj.get("product_title") or obj.get("label") or obj.get("type"))[:60],
@@ -180,6 +255,8 @@ def _key(item: dict[str, Any], model: str) -> str:
         "attrs": item["attrs"],
         "ratio": [round(item["w"] / item["h"] * 10) / 10, round(item["d"] / item["h"] * 10) / 10],
         "reference": item["reference_digest"],
+        "photo_kind": item["photo_kind"],
+        "svg": item["svg_digest"],
     }
     return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()[:24]
 
@@ -207,6 +284,7 @@ def generate_object_views(
     client: Any = None,
     model: str | None = None,
     max_new: int | None = None,
+    artwork: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """{"views": {object_id: {"views": {"front": url, ...}, "sizes": {...}}}, "remaining": n}.
 
@@ -241,7 +319,7 @@ def generate_object_views(
         kind = str(obj.get("type") or "")
         if not kind or kind in SKIP_TYPES:
             continue
-        item = _item(obj, photo, image_dir)
+        item = _item(obj, photo, image_dir, artwork)
         key = _key(item, model)
         cached = entry_for(key)
         if cached:
@@ -276,6 +354,8 @@ def generate_object_views(
                     d=item["d"],
                     h=item["h"],
                     attrs=json.dumps(item["attrs"], ensure_ascii=False) or "-",
+                    svg_block=SVG_BLOCK.format(svg=item["svg"]) if item["svg"] else "",
+                    reference_note=reference_note(bool(item["svg"]), item["photo_kind"]),
                 )
                 front_path = out_dir / f"{key}_front.png"
                 if not front_path.is_file():

@@ -118,5 +118,33 @@ class GenerateViewsTests(unittest.TestCase):
         self.assertEqual(len(client.models.calls), 1)
 
 
+    def test_floorplan_svg_is_the_primary_reference(self) -> None:
+        artwork = {
+            "defs": '<linearGradient id="gx-a"/>',
+            "objects": {"sofa_0": {"markup": '<rect width="200" height="90" fill="#123456"/>', "w": 200, "h": 90}},
+        }
+        client = _Client()
+        gfv.generate_object_views(_scene(), self.cache, room_photo=self.photo, client=client, model="img", artwork=artwork)
+        front_prompt = client.models.calls[0][0]
+        self.assertIn("```svg", front_prompt)
+        self.assertIn("#123456", front_prompt)
+        self.assertIn("gx-a", front_prompt)
+        self.assertIn("RIGHT side", client.models.calls[1][0])
+        self.assertIn("#123456", client.models.calls[1][0])  # 옆·뒤 그림에도 같은 기준
+
+    def test_whole_room_photo_when_no_photo_box_and_cache_is_per_room(self) -> None:
+        scene = _scene()
+        scene["objects"][0].pop("photo_box")
+        client = _Client()
+        gfv.generate_object_views(scene, self.cache, room_photo=self.photo, client=client, model="img")
+        self.assertIn("whole real room", client.models.calls[0][0])
+        self.assertEqual(len(client.models.calls[0]), 2)  # 프롬프트 + 방 사진
+        # 다른 방 사진이면 같은 이름·색의 가구라도 새로 그린다(옛 캐시의 재사용 문제)
+        other = self.cache / "other_room.jpg"
+        Image.new("RGB", (400, 300), "#405060").save(other)
+        gfv.generate_object_views(scene, self.cache, room_photo=other, client=client, model="img")
+        self.assertEqual(len(client.models.calls), 8)
+
+
 if __name__ == "__main__":
     unittest.main()

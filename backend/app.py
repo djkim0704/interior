@@ -2448,6 +2448,8 @@ def scene_object_views():
         room_photo=photo,
         url_prefix=url_for("static", filename="generated").rstrip("/"),
         max_new=2,
+        # 2D 평면도의 Gemini 가구 그림을 기준으로 3D 그림을 그린다(사진과 닮게)
+        artwork=model2_floorplan.load_artwork(layout, GENERATED_DIR),
     )
     return jsonify({"ok": True, **result})
 
