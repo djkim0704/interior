@@ -63,14 +63,14 @@ def targets(graph: dict[str, Any], ids: list[str] | None = None) -> list[dict[st
     return rows[:MAX_OBJECTS]
 
 
-def _crop(image: Image.Image, box: list[float] | None) -> bytes:
+def _crop(image: Image.Image, box: list[float] | None, max_side: int = CROP_MAX_SIDE) -> bytes:
     if box:
         x0, y0, x1, y1 = box
         x0, y0 = max(0.0, x0 - CROP_MARGIN), max(0.0, y0 - CROP_MARGIN)
         x1, y1 = min(1.0, x1 + CROP_MARGIN), min(1.0, y1 + CROP_MARGIN)
         w, h = image.size
         image = image.crop((int(x0 * w), int(y0 * h), max(int(x0 * w) + 8, int(x1 * w)), max(int(y0 * h) + 8, int(y1 * h))))
-    scale = min(1.0, CROP_MAX_SIDE / max(image.size))
+    scale = min(1.0, max_side / max(image.size))
     if scale < 1.0:
         image = image.resize((round(image.width * scale), round(image.height * scale)), Image.Resampling.LANCZOS)
     buffer = io.BytesIO()

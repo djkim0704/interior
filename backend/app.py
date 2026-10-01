@@ -69,6 +69,7 @@ from model2 import gemini_reanalyze
 from model2 import spatial_fit
 from model2 import gemini_room_svg_render
 from model2 import gemini_furniture_parts
+from model2 import gemini_furniture_views
 from model2.gemini_retry import (
     call_with_retry,
     GeminiBusyError,
@@ -2418,6 +2419,38 @@ def scene_object_parts():
         style_prompt=_preview_style_prompt(),
     )
     return jsonify({"ok": True, "object_parts": parts})
+
+
+@app.post("/api/scene/views")
+def scene_object_views():
+    """가구별 입체 그림(4방향). three.js는 이 그림을 Scene Graph 위치에 세운다.
+
+    이미지 생성은 가구당 여러 번 호출해 오래 걸린다. 한 번에 두 가구씩 그리고 남은
+    수를 돌려주면, 화면이 남은 가구가 없을 때까지 다시 부른다.
+    """
+    if "uploaded_file" not in session or not gemini_furniture_views.enabled():
+        return jsonify({"ok": True, "views": {}, "remaining": 0})
+    payload = request.get_json(silent=True) or {}
+    context = "final" if payload.get("context") == "final" else "floorplan"
+    if context == "final":
+        layout_path, _ = resolve_final_layout_path()
+    else:
+        layout_path = resolve_session_generated_file("floorplan_layout_file")
+    if not layout_path or not os.path.isfile(layout_path):
+        return jsonify({"ok": True, "views": {}, "remaining": 0})
+    layout = json.loads(Path(layout_path).read_text(encoding="utf-8"))
+    plan, _ = current_room_plan()
+    with floorplan_generation_lock:
+        scene = floorplan_3d.build_scene(layout, plan)
+    photo = Path(UPLOAD_DIR) / os.path.basename(str(session.get("uploaded_file")))
+    result = gemini_furniture_views.generate_object_views(
+        scene,
+        GENERATED_DIR,
+        room_photo=photo,
+        url_prefix=url_for("static", filename="generated").rstrip("/"),
+        max_new=2,
+    )
+    return jsonify({"ok": True, **result})
 
 
 @app.post("/api/scene/reanalyze")

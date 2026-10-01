@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -74,12 +76,19 @@ class ObjectPartsTests(unittest.TestCase):
         client = _Client()
         parts = gfp.generate_object_parts(_scene(with_product=True), self.cache, room_photo=self.photo, model="m", client=client)
         self.assertEqual(sorted(parts), ["product_1", "sofa_1"])  # 문은 묻지 않는다
-        contents = client.models.calls[0]
-        self.assertEqual(len(contents), 3)  # 프롬프트 + 소파(방 사진 일부) + 의자(상품 사진)
-        self.assertIn("원목 의자", contents[0])
+        # 기본은 가구마다 따로 묻는다: 프롬프트 + 그 가구 사진 1장
+        self.assertEqual([len(c) for c in client.models.calls], [2, 2])
+        self.assertIn("원목 의자", client.models.calls[1][0])
         part = parts["sofa_1"]["parts"]
         self.assertEqual((part[0]["color"], part[0]["material"]), ("#112233", "fabric"))
         self.assertNotIn("material", part[1])  # 허용하지 않은 재질은 버린다
+
+    def test_batch_mode_asks_several_objects_at_once(self) -> None:
+        client = _Client()
+        with mock.patch.dict(os.environ, {"OBJECT_PARTS_BATCH": "4"}):
+            gfp.generate_object_parts(_scene(with_product=True), self.cache, room_photo=self.photo, model="m", client=client)
+        self.assertEqual(len(client.models.calls), 1)
+        self.assertEqual(len(client.models.calls[0]), 3)
 
     def test_cache_ignores_position_and_asks_only_new_objects(self) -> None:
         client = _Client()
@@ -101,6 +110,28 @@ class ObjectPartsTests(unittest.TestCase):
         self.assertEqual(gfp.generate_object_parts(_scene(), self.cache, model="m", client=client), {})
         self.assertEqual(gfp.generate_object_parts(_scene(), self.cache, model="m", client=client), {})
         self.assertEqual(len(client.models.calls), 1)
+
+
+class ShapeTests(unittest.TestCase):
+    def test_new_shapes_rotation_and_clamping(self) -> None:
+        rounded = gfp._coerce_object_part({"shape": "rounded_box", "w": 1, "h": 0.3, "d": 0.8, "radius": 0.9, "x": 0, "y": 0.4, "z": 0, "rx": 12})
+        self.assertEqual((rounded["radius"], rounded["rx"]), (0.5, 12.0))
+        leg = gfp._coerce_object_part({"shape": "cylinder", "r": 0.04, "r2": 0.02, "h": 0.4, "x": 0.4, "y": 0, "z": 0.4, "rz": 0.1})
+        self.assertEqual((leg["r"], leg["r2"]), (0.04, 0.02))
+        self.assertNotIn("rz", leg)  # 0.5도 미만 회전은 버린다
+        ball = gfp._coerce_object_part({"shape": "sphere", "w": 0.3, "h": 0.3, "d": 0.3, "x": 0, "y": 0.9, "z": 0, "ry": 400})
+        self.assertEqual(ball["ry"], 180.0)
+        self.assertIsNone(gfp._coerce_object_part({"shape": "torus"}))
+
+    def test_thinking_config_per_model_generation(self) -> None:
+        self.assertIsNotNone(gfp.thinking_for("gemini-3.6-flash", "high").thinking_level)
+        self.assertEqual(gfp.thinking_for("gemini-2.5-flash", "medium").thinking_budget, 4096)
+        self.assertEqual(gfp.thinking_for("gemini-2.5-flash", "off").thinking_budget, 0)
+
+    def test_max_parts_from_env(self) -> None:
+        with mock.patch.dict(os.environ, {"OBJECT_PARTS_MAX": "12"}):
+            self.assertEqual(gfp.max_parts_per_object(), 12)
+            self.assertIn("At most 12 parts", gfp._object_prompt([], ""))
 
 
 if __name__ == "__main__":

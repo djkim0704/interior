@@ -89,6 +89,7 @@
         <button type="button" class="btn btn-outline-secondary" data-view-preset="eye">
           눈높이
         </button>
+        <button type="button" class="btn btn-outline-dark d-none" id="floorplan3dArt">입체 모형으로 보기</button>
         <button type="button" class="btn btn-outline-dark d-none" id="floorplan3dEdit">가구 옮기기</button>
         <button type="button" class="btn btn-outline-dark d-none" id="floorplan3dRotate" disabled title="고른 가구를 90° 돌립니다 (R 키)">↻ 회전</button>
         <button type="button" class="btn btn-outline-secondary active" id="floorplan3dLabels">
@@ -101,6 +102,7 @@
         class="d-none border mb-3"
         data-edit-url="{{ url_for('edit_scene') }}"
         data-parts-url="{{ url_for('scene_object_parts') }}"
+        data-views-url="{{ url_for('scene_object_views') }}"
         data-edit-context="floorplan"
       ></div>
 
@@ -216,10 +218,10 @@
 
 {% block extra_js %}
 <script
-  src="{{ url_for('static', filename='js/floorplan_drag.js', v='20261002-object-parts') }}"
+  src="{{ url_for('static', filename='js/floorplan_drag.js', v='20261002-views') }}"
 ></script>
 <script
-  src="{{ url_for('static', filename='js/floorplan_edit.js', v='20261002-object-parts') }}"
+  src="{{ url_for('static', filename='js/floorplan_edit.js', v='20261002-views') }}"
   data-save-url="{{ url_for('save_floorplan_edit') }}"
 ></script>
 <script
@@ -243,7 +245,7 @@
   </script>
   <script
     type="module"
-    src="{{ url_for('static', filename='js/floorplan_3d.js', v='20261002-object-parts') }}"
+    src="{{ url_for('static', filename='js/floorplan_3d.js', v='20261002-views') }}"
   ></script>
 {% endif %}
 {% endblock %}

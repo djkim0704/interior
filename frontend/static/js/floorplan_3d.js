@@ -9,6 +9,7 @@
 // 씬 데이터는 <script type="application/json" id="floorplan3dScene"> 에 들어온다.
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { RoundedBoxGeometry } from "three/addons/geometries/RoundedBoxGeometry.js";
 
 // ── 색 유틸 ────────────────────────────────────────────────
 // 면마다 광원 계산을 하는 대신, 같은 색의 명도만 바꿔 부재를 구분한다.
@@ -664,6 +665,8 @@ const PARAMETRIC = {
 function buildFromParts(obj, parts) {
   const { w_m: w, d_m: d, height_m: h, color } = obj;
   const g = new THREE.Group();
+  const short = Math.min(w, d);
+  const deg = Math.PI / 180;
 
   parts.forEach((part) => {
     const tone = typeof part.tone === "number" ? part.tone : 1;
@@ -672,20 +675,87 @@ function buildFromParts(obj, parts) {
     const x = (part.x || 0) * w;
     const y = (part.y || 0) * h;
     const z = (part.z || 0) * d;
+    let geometry;
+    let height;
 
     if (part.shape === "cylinder") {
-      // 반지름은 짧은 쪽 변에 걸어야 가구 밖으로 삐져나오지 않는다
-      const r = (part.r || 0.05) * Math.min(w, d);
-      g.add(cylinder(r, (part.h || 0.1) * h, mat, x, y, z));
-      return;
+      // 반지름은 짧은 쪽 변에 건다. r2가 있으면 아래로 갈수록 굵기가 바뀐다(가늘어지는 다리, 갓)
+      const top = Math.max(0.002, (part.r || 0.05) * short);
+      const bottom = typeof part.r2 === "number" ? Math.max(0.0, part.r2 * short) : top;
+      height = (part.h || 0.1) * h;
+      geometry = new THREE.CylinderGeometry(top, bottom, height, 24);
+    } else {
+      const pw = (part.w || 0.1) * w;
+      const pd = (part.d || 0.1) * d;
+      height = (part.h || 0.1) * h;
+      if (part.shape === "sphere") {
+        geometry = new THREE.SphereGeometry(0.5, 24, 16);
+        geometry.scale(pw, height, pd);
+      } else if (part.shape === "rounded_box") {
+        // 쿠션·매트리스처럼 모서리가 둥근 부품. 반지름은 가장 짧은 변의 비율
+        const radius = Math.min(pw, height, pd) * Math.min(0.5, part.radius || 0.2);
+        geometry = new RoundedBoxGeometry(pw, height, pd, 3, Math.max(0.001, radius));
+      } else {
+        geometry = new THREE.BoxGeometry(pw, height, pd);
+      }
     }
 
-    g.add(
-      box((part.w || 0.1) * w, (part.h || 0.1) * h, (part.d || 0.1) * d, mat, x, y, z)
-    );
+    const mesh = new THREE.Mesh(geometry, mat);
+    // y는 밑면 높이다. 도형은 중심 기준이라 절반만큼 올린 뒤, 그 중심에서 기울인다
+    mesh.position.set(x, y + height / 2, z);
+    mesh.rotation.set((part.rx || 0) * deg, (part.ry || 0) * deg, (part.rz || 0) * deg);
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    g.add(mesh);
   });
 
   return g;
+}
+
+// ── AI 입체 그림 배치 ───────────────────────────────────
+// 가구마다 이미지 모델이 그린 4방향 입체 그림(앞·오른쪽·뒤·왼쪽)을 받아, 가구 자리에
+// 세운 판에 붙인다. 판은 카메라 쪽으로 몸을 돌리고, 카메라가 가구의 어느 쪽에 있는지에
+// 따라 가장 가까운 방향의 그림으로 바꿔 끼운다. 그림 자체는 이미 빛과 그림자가 들어간
+// 렌더라서 조명을 받지 않는 재질(MeshBasicMaterial)을 쓴다.
+const VIEW_TEXTURES = new Map();
+function viewTexture(url) {
+  if (!VIEW_TEXTURES.has(url)) {
+    const texture = new THREE.TextureLoader().load(url);
+    texture.colorSpace = THREE.SRGBColorSpace;
+    VIEW_TEXTURES.set(url, texture);
+  }
+  return VIEW_TEXTURES.get(url);
+}
+
+function makeArtBoard(obj, views) {
+  const material = new THREE.MeshBasicMaterial({
+    map: viewTexture(views.views.front),
+    transparent: true,
+    alphaTest: 0.08,
+    side: THREE.DoubleSide,
+    depthWrite: true,
+  });
+  // 여러 번 다시 세워도 같은 텍스처를 쓰므로 뷰어를 버릴 때 텍스처는 지우지 않는다
+  material.userData.sharedMap = true;
+  const board = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), material);
+  board.userData.views = views;
+  board.userData.current = "";
+  board.renderOrder = 2;
+  return board;
+}
+
+// 판 크기를 그림 방향에 맞춘다. 비스듬히 위에서 본 그림이라 옆면이 조금 보이는 만큼 넓힌다
+function sizeArtBoard(board, obj, view) {
+  const views = board.userData.views;
+  const size = (views.sizes || {})[view] || [1, 1];
+  const side = view === "left" || view === "right";
+  const across = side ? obj.d_m + obj.w_m * 0.3 : obj.w_m + obj.d_m * 0.3;
+  const height = across * (size[1] / Math.max(1, size[0]));
+  board.scale.set(across, height, 1);
+  board.userData.height = height;
+  board.material.map = viewTexture(views.views[view] || views.views.front);
+  board.material.needsUpdate = true;
+  board.userData.current = view;
 }
 
 // ── 라벨 (캔버스 텍스처 스프라이트) ─────────────────────────
@@ -841,6 +911,9 @@ class Floorplan3D {
     const { width_m: w, depth_m: d } = this.data.room;
     this.furnitureGroup = new THREE.Group();
     this.labelGroup = new THREE.Group();
+    this.artGroup = new THREE.Group();
+    this.artBoards = [];
+    this.showArt = this.data.view_mode !== "model";
 
     this.data.objects.forEach((obj) => {
       // 설계도가 있으면 그것으로, 없으면 손으로 짠 빌더로 세운다.
@@ -877,6 +950,23 @@ class Floorplan3D {
 
       const wrapper = new THREE.Group();
       wrapper.add(node);
+      // AI 입체 그림이 있으면 모형 대신 그림을 보여 준다. 모형은 숨기되 남겨서
+      // 마우스 판정(고르기·끌기)과 바닥 그림자 계산에 쓴다
+      const views = this.showArt ? (this.data.object_views || {})[obj.id] : null;
+      if (views && views.views && views.views.front && !obj.wall_mounted) {
+        node.visible = false;
+        const shadow = new THREE.Mesh(
+          new THREE.CircleGeometry(0.5, 32),
+          new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.16, depthWrite: false })
+        );
+        shadow.rotation.x = -Math.PI / 2;
+        shadow.scale.set(obj.w_m * 1.05, obj.d_m * 1.05, 1);
+        shadow.position.y = 0.004;
+        wrapper.add(shadow);
+        const board = makeArtBoard(obj, views);
+        this.artBoards.push({ board, wrapper, obj });
+        this.artGroup.add(board);
+      }
       wrapper.position.set(x, obj.base_m, z);
       // rotation_deg 는 위에서 본 시계방향 각. three.js Y축 회전은 반대라 부호를 뒤집는다.
       wrapper.rotation.y = -THREE.MathUtils.degToRad(obj.rotation_deg);
@@ -896,6 +986,7 @@ class Floorplan3D {
 
     this.scene.add(this.furnitureGroup);
     this.scene.add(this.labelGroup);
+    this.scene.add(this.artGroup);
   }
 
   // 카메라 프리셋 — iso(기본) / top(위에서) / eye(눈높이)
@@ -1094,8 +1185,34 @@ class Floorplan3D {
     if (this.disposed) return;
     this.frame = requestAnimationFrame(() => this._animate());
     this.controls.update();
+    this._updateArtBoards();
     // 라벨이 항상 카메라를 향하도록(스프라이트는 자동이지만 크기 보정용)
     this.renderer.render(this.scene, this.camera);
+  }
+
+  // 그림 판이 가구를 따라가고, 카메라를 향하고, 보는 방향에 맞는 그림으로 바뀐다
+  _updateArtBoards() {
+    if (!this.artBoards || !this.artBoards.length) return;
+    const camera = this.camera.position;
+    this.artBoards.forEach(({ board, wrapper, obj }) => {
+      const pos = wrapper.position;
+      const dx = camera.x - pos.x;
+      const dz = camera.z - pos.z;
+      // 가구 기준 좌표로 카메라 방향을 돌려 본다. 가구 앞면은 +z다
+      const yaw = wrapper.rotation.y;
+      const localX = dx * Math.cos(yaw) - dz * Math.sin(yaw);
+      const localZ = dx * Math.sin(yaw) + dz * Math.cos(yaw);
+      const angle = Math.atan2(localX, localZ) * 180 / Math.PI;
+      let view = "front";
+      if (Math.abs(angle) > 135) view = "back";
+      else if (angle < -45) view = "right";
+      else if (angle > 45) view = "left";
+      const available = board.userData.views.views;
+      if (!available[view]) view = "front";
+      if (board.userData.current !== view) sizeArtBoard(board, obj, view);
+      board.position.set(pos.x, pos.y + board.userData.height / 2, pos.z);
+      board.rotation.set(0, Math.atan2(dx, dz), 0);
+    });
   }
 
   dispose() {
@@ -1112,7 +1229,7 @@ class Floorplan3D {
       if (node.material) {
         const mats = Array.isArray(node.material) ? node.material : [node.material];
         mats.forEach((m) => {
-          if (m.map) m.map.dispose();
+          if (m.map && !(m.userData && m.userData.sharedMap)) m.map.dispose();
           m.dispose();
         });
       }
@@ -1253,6 +1370,12 @@ function init() {
     if (data && data.object_parts && !next.object_parts) {
       next.object_parts = data.object_parts;
     }
+    if (data && data.object_views && !next.object_views) {
+      next.object_views = data.object_views;
+    }
+    if (data && data.view_mode && !next.view_mode) {
+      next.view_mode = data.view_mode;
+    }
     data = next;
     const visible = !host.classList.contains("d-none");
     let camera = null;
@@ -1390,6 +1513,57 @@ function init() {
     }
   }
   window.addEventListener("floorplan:viewer-ready", loadParts);
+
+  // ── AI 입체 그림 받기 ─────────────────────────────────
+  // 가구당 이미지 여러 장을 그려 오래 걸린다. 서버가 두 가구씩 그려 주면 받은 만큼
+  // 바로 세우고, 남은 가구가 있으면 다시 부른다.
+  const viewsUrl = host.dataset.viewsUrl;
+  let viewsBusy = false;
+  async function loadViews() {
+    if (!viewsUrl || viewsBusy || !data) return;
+    const have = data.object_views || {};
+    const missing = (data.objects || []).filter((o) => !have[o.id] && !o.wall_mounted);
+    if (!missing.length) return;
+    viewsBusy = true;
+    try {
+      if (status) status.textContent = "AI가 가구 입체 그림을 그리고 있어요…";
+      const response = await fetch(viewsUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ context: editContext }),
+      });
+      const result = await response.json();
+      const fresh = (result && result.views) || {};
+      const added = Object.keys(fresh).filter((id) => !have[id]);
+      if (added.length) {
+        data = { ...data, object_views: { ...have, ...fresh } };
+        window.dispatchEvent(new CustomEvent("floorplan:scene-updated", { detail: data }));
+      }
+      if (status) {
+        status.textContent = result && result.remaining
+          ? `AI 입체 그림을 그리는 중… 남은 가구 ${result.remaining}개`
+          : "";
+      }
+      viewsBusy = false;
+      // 남은 가구가 있고 이번에 하나라도 받았으면 이어서 그린다(실패만 반복되면 멈춘다)
+      if (result && result.remaining && added.length) loadViews();
+    } catch (error) {
+      viewsBusy = false;
+      console.warn("[floorplan-3d] 입체 그림을 받지 못해 모형으로 표시합니다:", error);
+    }
+  }
+  window.addEventListener("floorplan:viewer-ready", loadViews);
+
+  const artButton = document.getElementById("floorplan3dArt");
+  if (artButton && viewsUrl) {
+    artButton.classList.remove("d-none");
+    artButton.addEventListener("click", () => {
+      const toModel = data.view_mode !== "model";
+      data = { ...data, view_mode: toModel ? "model" : "art" };
+      artButton.textContent = toModel ? "AI 그림으로 보기" : "입체 모형으로 보기";
+      window.dispatchEvent(new CustomEvent("floorplan:scene-updated", { detail: data }));
+    });
+  }
 
   // 전용 화면은 사용자가 누를 것도 없이 바로 3D를 보여준다
   if (autostart) show3d();

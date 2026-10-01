@@ -302,36 +302,84 @@ def generate_furniture_parts(
 # 여기서는 가구 하나하나를 그 가구의 사진(상품 사진, 또는 방 사진에서 잘라 낸 부분)과
 # 함께 보내 고유한 부품 목록을 받는다. 캐시는 가구 정체성(종류·이름·색·속성·크기 비율·
 # 사진) 단위라 위치·회전이 바뀌어도 다시 부르지 않고, 새로 들어온 가구만 묻는다.
-OBJECT_PROMPT_VERSION = "object-parts-v1"
-MAX_PARTS_PER_OBJECT = 24
+#
+# 품질 설정(.env)
+#   OBJECT_PARTS_MAX          가구당 최대 부품 수 (기본 40)
+#   OBJECT_PARTS_BATCH        한 번에 묻는 가구 수 (기본 1 = 가구마다 따로, 품질 우선)
+#   GEMINI_OBJECT_PARTS_THINKING  off|low|medium|high (기본 medium). 구조를 먼저 설계하게 한다
+#   OBJECT_PARTS_IMAGE_MAX    가구 사진 긴 변 픽셀 (기본 1280)
+OBJECT_PROMPT_VERSION = "object-parts-v2"
 OBJECT_PARTS_DIR = "gemini_object_parts_v1"
 _HEX = re.compile(r"^#[0-9a-fA-F]{6}$")
 PART_MATERIALS = {"wood", "fabric", "leather", "metal", "glass", "plastic", "rattan", "marble"}
+OBJECT_SHAPES = {"box", "rounded_box", "cylinder", "sphere"}
+
+
+def _env_int(name: str, default: int, low: int, high: int) -> int:
+    try:
+        return max(low, min(high, int(os.getenv(name, "").strip() or default)))
+    except ValueError:
+        return default
+
+
+def max_parts_per_object() -> int:
+    return _env_int("OBJECT_PARTS_MAX", 40, 8, 80)
+
+
+def thinking_for(model: str, level: str | None = None) -> types.ThinkingConfig:
+    """thinking 수준을 모델 세대에 맞는 설정으로 바꾼다.
+
+    Gemini 3 계열은 thinking_level만 받고, 2.5 이하는 thinking_budget(토큰 수)을 받는다.
+    """
+    level = (level or "medium").strip().lower()
+    if level == "off":
+        from .gemini_svg_experiment import minimal_thinking
+
+        return minimal_thinking(model)
+    if str(model).lower().startswith("gemini-3"):
+        mapping = {"low": types.ThinkingLevel.LOW, "medium": types.ThinkingLevel.MEDIUM, "high": types.ThinkingLevel.HIGH}
+        return types.ThinkingConfig(thinking_level=mapping.get(level, types.ThinkingLevel.MEDIUM))
+    return types.ThinkingConfig(thinking_budget={"low": 1024, "medium": 4096, "high": 8192}.get(level, 4096))
+
 
 OBJECT_PROMPT = """
-You are a 3D furniture modeler. For each object below, build a recognizable 3D model
-of THAT specific item as a list of primitives for a three.js renderer. Each numbered
-image (when given) shows the real item: match its silhouette, proportions, legs,
-cushions, armrests, frames, drawer fronts and color areas.
+You are an expert 3D furniture modeler. For each object below, build a faithful 3D
+model of THAT specific item from primitives for a three.js renderer. Each numbered
+image (when given) shows the real item. Before writing parts, study the image:
+identify the main components (frame, seat, cushions, back, arms, legs, top, drawers,
+doors, handles, headboard, mattress, shade, pot, leaves), their relative sizes, how
+they connect, and their colors and materials. Then model each component.
 
 Coordinate contract (follow exactly):
 - Origin is the center of the footprint, ON THE FLOOR.
-- "y" is the height of the part's BOTTOM face above the floor, not its center.
+- "y" is the height of the part's BOTTOM face above the floor (before rotation).
 - The back of the object faces -z. The front faces +z.
 - All sizes and positions are FRACTIONS of the object's own bounding box
   (W, D, H given per object). x/z run from -0.5 to 0.5, y from 0 to 1.
   Only tall headboards or backrests may rise to y+h = 1.3.
 
-Each part is one of:
-  {"shape":"box","w":..,"h":..,"d":..,"x":..,"y":..,"z":..,"color":"#rrggbb","material":"fabric"}
-  {"shape":"cylinder","r":..,"h":..,"x":..,"y":..,"z":..,"color":"#rrggbb","material":"metal"}
-"r" is a fraction of the shorter footprint side. "material" is one of
-wood, fabric, leather, metal, glass, plastic, rattan, marble.
+Part shapes:
+  {"shape":"box","w":..,"h":..,"d":..,"x":..,"y":..,"z":..}
+  {"shape":"rounded_box","w":..,"h":..,"d":..,"radius":0.3,"x":..,"y":..,"z":..}
+      radius = fraction of the part's smallest side (0..0.5). Use for cushions,
+      mattresses, upholstered arms and backs, soft edges.
+  {"shape":"cylinder","r":..,"r2":..,"h":..,"x":..,"y":..,"z":..}
+      r = top radius, r2 = bottom radius (optional; tapered legs, lamp shades, pots),
+      both fractions of the shorter footprint side.
+  {"shape":"sphere","w":..,"h":..,"d":..,"x":..,"y":..,"z":..}
+      ellipsoid inside that box (bulbs, round cushions, leaf clusters).
+Every part may also have:
+  "rx","ry","rz": rotation in degrees about the part's own center
+      (tilt backrests 5-15 degrees with rx, splay legs, angle armrests),
+  "color": "#rrggbb" sampled from the image,
+  "material": one of wood, fabric, leather, metal, glass, plastic, rattan, marble.
 
 Rules:
-- At most MAX_PARTS parts per object. Every part must touch the object;
-  no floating pieces.
-- Use real colors from the image for each part (legs, frame, cushions differ).
+- At most MAX_PARTS parts per object. Spend them on recognizable details:
+  separate seat and back cushions, visible legs, drawer fronts and handles,
+  frame rails, buttons or seams only if clearly visible.
+- Every part must touch the object; no floating pieces. Legs reach the floor (y=0).
+- Keep the overall silhouette inside the bounding box.
 - Do not include labels, text, or any field not listed above.
 
 Design preference: STYLE
@@ -339,7 +387,7 @@ Design preference: STYLE
 Objects:
 LISTING
 
-Response shape:
+Response shape (JSON only):
 {"<id>": {"parts": [ ... ]}, ...}
 """.strip()
 
@@ -352,22 +400,59 @@ def _object_prompt(items: list[dict[str, Any]], style_prompt: str) -> str:
         for item in items
     )
     return (
-        OBJECT_PROMPT.replace("MAX_PARTS", str(MAX_PARTS_PER_OBJECT))
+        OBJECT_PROMPT.replace("MAX_PARTS", str(max_parts_per_object()))
         .replace("STYLE", style_prompt[:300] or "match the photos")
         .replace("LISTING", listing)
     )
 
 
 def _coerce_object_part(raw: Any) -> dict[str, Any] | None:
-    part = _coerce_part(raw)
-    if part is None:
+    """가구별 부품 하나를 검증한다. 범위를 벗어난 값은 버리지 않고 자른다."""
+    if not isinstance(raw, dict):
         return None
-    color = str((raw or {}).get("color") or "")
+    shape = str(raw.get("shape") or "").strip().lower()
+    if shape not in OBJECT_SHAPES:
+        return None
+
+    def number(key: str, low: float, high: float, default: float = 0.0) -> float:
+        try:
+            value = float(raw.get(key))
+        except (TypeError, ValueError):
+            return default
+        if value != value:  # NaN은 three.js에서 도형을 조용히 없앤다
+            return default
+        return max(low, min(high, value))
+
+    part: dict[str, Any] = {
+        "shape": shape,
+        "x": number("x", -0.6, 0.6),
+        "y": number("y", 0.0, 1.3),
+        "z": number("z", -0.6, 0.6),
+    }
+    if shape == "cylinder":
+        part["r"] = number("r", 0.004, 0.6, 0.05)
+        if raw.get("r2") is not None:
+            part["r2"] = number("r2", 0.0, 0.6, part["r"])
+        part["h"] = number("h", 0.005, 1.3, 0.1)
+    else:
+        part["w"] = number("w", 0.005, 1.2, 0.1)
+        part["h"] = number("h", 0.005, 1.3, 0.1)
+        part["d"] = number("d", 0.005, 1.2, 0.1)
+        if shape == "rounded_box":
+            part["radius"] = number("radius", 0.0, 0.5, 0.2)
+    for axis, limit in (("rx", 90.0), ("ry", 180.0), ("rz", 90.0)):
+        if raw.get(axis) is not None:
+            value = number(axis, -limit, limit, 0.0)
+            if abs(value) >= 0.5:
+                part[axis] = round(value, 1)
+    color = str(raw.get("color") or "")
     if _HEX.match(color):
         part["color"] = color.lower()
-    material = str((raw or {}).get("material") or "").lower()
+    material = str(raw.get("material") or "").lower()
     if material in PART_MATERIALS:
         part["material"] = material
+    if raw.get("tone") is not None:
+        part["tone"] = number("tone", 0.4, 1.3, 1.0)
     return part
 
 
@@ -376,6 +461,8 @@ def _object_key(item: dict[str, Any], model: str, style_prompt: str) -> str:
         "version": OBJECT_PROMPT_VERSION,
         "model": model,
         "style": style_prompt,
+        "max_parts": max_parts_per_object(),
+        "thinking": os.getenv("GEMINI_OBJECT_PARTS_THINKING", "medium").strip().lower(),
         "type": item["type"],
         "label": item["label"],
         "color": item["color"],
@@ -389,18 +476,24 @@ def _object_key(item: dict[str, Any], model: str, style_prompt: str) -> str:
 
 def _object_image(obj: dict[str, Any], room_photo: Path | None, image_dir: Path | None) -> bytes | None:
     """상품은 상품 사진, 기존 가구는 방 사진에서 그 가구 부분을 잘라 쓴다."""
+    max_side = _env_int("OBJECT_PARTS_IMAGE_MAX", 1280, 384, 2048)
     image_file = obj.get("image_file")
     if image_file and image_dir is not None:
         path = image_dir / Path(str(image_file)).name
         if path.is_file():
-            return path.read_bytes()
+            from PIL import Image
+
+            from .gemini_reanalyze import _crop
+
+            with Image.open(path) as source:
+                return _crop(source.convert("RGB"), None, max_side=max_side)
     if room_photo is not None and Path(room_photo).is_file() and obj.get("photo_box"):
         from PIL import Image
 
         from .gemini_reanalyze import _crop
 
         with Image.open(room_photo) as source:
-            return _crop(source.convert("RGB"), obj["photo_box"])
+            return _crop(source.convert("RGB"), obj["photo_box"], max_side=max_side)
     return None
 
 
@@ -413,10 +506,11 @@ def generate_object_parts(
     model: str | None = None,
     client: Any = None,
 ) -> dict[str, Any]:
-    """가구별 부품 목록 {object_id: {"parts": [...]}}. 캐시에 없는 가구만 한 번에 묻는다.
+    """가구별 부품 목록 {object_id: {"parts": [...]}}. 캐시에 없는 가구만 묻는다.
 
-    실패해도 예외를 올리지 않고 받은 만큼만 돌려준다. 빠진 가구는 three.js가
-    파라메트릭 모양으로 그린다.
+    기본은 가구마다 따로 묻는다(OBJECT_PARTS_BATCH=1). 한 요청에 여러 가구를 넣으면
+    호출은 줄지만 모델의 주의가 나뉘어 세부가 떨어진다. 실패한 묶음만 비고, 빠진
+    가구는 three.js가 파라메트릭 모양으로 그린다.
     """
     model = (
         model
@@ -428,6 +522,9 @@ def generate_object_parts(
     cache_root.mkdir(parents=True, exist_ok=True)
     image_dir = Path(cache_dir).resolve() / "product_images_v1"
     photo = Path(room_photo) if room_photo else None
+    max_parts = max_parts_per_object()
+    batch_size = _env_int("OBJECT_PARTS_BATCH", 1, 1, 12)
+    thinking = os.getenv("GEMINI_OBJECT_PARTS_THINKING", "medium")
 
     result: dict[str, Any] = {}
     pending: list[dict[str, Any]] = []
@@ -465,57 +562,67 @@ def generate_object_parts(
     if not pending:
         return result
 
-    images = [item for item in pending if item["image"]]
-    for index, item in enumerate(images, start=1):
-        item["image_index"] = index
-    for item in pending:
-        item.setdefault("image_index", None)
-    contents: list[Any] = [_object_prompt(pending, style_prompt)]
-    contents += [types.Part.from_bytes(data=item["image"], mime_type="image/jpeg") for item in images]
+    from .gemini_svg_experiment import _ensure_not_truncated
 
     with _GENERATION_LOCK:
+        # Client 를 변수로 붙들어 둔다(AGENTS.md 7.4)
         try:
-            from .gemini_svg_experiment import _ensure_not_truncated
-
-            # Client 를 변수로 붙들어 둔다(AGENTS.md 7.4)
             client = client or _client()
-            response = call_with_retry(
-                client.models.generate_content,
-                model=model,
-                contents=contents,
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    temperature=0.3,
-                    max_output_tokens=24000,
-                ),
-                description="가구별 3D 형태 생성",
-            )
-            if not response.text:
-                raise RuntimeError("Gemini가 가구 형태를 반환하지 않았습니다.")
-            _ensure_not_truncated(response)
-            payload = _extract_json(str(response.text))
-            if not isinstance(payload, dict):
-                raise RuntimeError("가구 형태 응답 형식이 올바르지 않습니다.")
         except Exception as exc:
-            print(f"[gemini-object-parts] 생성 실패: {exc}")
-            for item in pending:
-                (cache_root / f"{item['key']}.failed").write_text(
-                    f"{int(time.time())}\n{type(exc).__name__}: {exc}", encoding="utf-8"
-                )
+            print(f"[gemini-object-parts] 클라이언트 생성 실패: {exc}")
             return result
-
-    for item in pending:
-        entry = payload.get(item["id"])
-        raw_parts = entry.get("parts") if isinstance(entry, dict) else None
-        parts = [
-            coerced
-            for coerced in (_coerce_object_part(raw) for raw in (raw_parts or [])[:MAX_PARTS_PER_OBJECT])
-            if coerced
-        ]
-        if not parts:
-            # 빈 설계도를 넘기면 three.js가 가구를 통째로 지운다(AGENTS.md 7.9). 남기지 않는다
-            continue
-        recipe = {"parts": parts, "source": "gemini", "model": model}
-        (cache_root / f"{item['key']}.json").write_text(json.dumps(recipe, ensure_ascii=False), encoding="utf-8")
-        result[item["id"]] = recipe
+        for start in range(0, len(pending), batch_size):
+            batch = pending[start : start + batch_size]
+            images = [item for item in batch if item["image"]]
+            for item in batch:
+                item["image_index"] = None
+            for index, item in enumerate(images, start=1):
+                item["image_index"] = index
+            contents: list[Any] = [_object_prompt(batch, style_prompt)]
+            contents += [types.Part.from_bytes(data=item["image"], mime_type="image/jpeg") for item in images]
+            try:
+                response = call_with_retry(
+                    client.models.generate_content,
+                    model=model,
+                    contents=contents,
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json",
+                        temperature=0.3,
+                        # thinking 토큰도 이 한도를 함께 쓴다. 부품 40개 × 가구 수에
+                        # 설계 추론까지 들어가므로 넉넉히 둔다
+                        max_output_tokens=12000 + 6000 * len(batch),
+                        thinking_config=thinking_for(model, thinking),
+                    ),
+                    description="가구별 3D 형태 생성",
+                )
+                if not response.text:
+                    raise RuntimeError("Gemini가 가구 형태를 반환하지 않았습니다.")
+                _ensure_not_truncated(response)
+                payload = _extract_json(str(response.text))
+                if not isinstance(payload, dict):
+                    raise RuntimeError("가구 형태 응답 형식이 올바르지 않습니다.")
+            except Exception as exc:
+                print(f"[gemini-object-parts] 생성 실패({', '.join(i['id'] for i in batch)}): {exc}")
+                for item in batch:
+                    (cache_root / f"{item['key']}.failed").write_text(
+                        f"{int(time.time())}\n{type(exc).__name__}: {exc}", encoding="utf-8"
+                    )
+                continue
+            for item in batch:
+                entry = payload.get(item["id"])
+                # 가구 하나만 물었는데 id 없이 parts만 돌려주는 경우도 받아 준다
+                if entry is None and len(batch) == 1 and "parts" in payload:
+                    entry = payload
+                raw_parts = entry.get("parts") if isinstance(entry, dict) else None
+                parts = [
+                    coerced
+                    for coerced in (_coerce_object_part(raw) for raw in (raw_parts or [])[:max_parts])
+                    if coerced
+                ]
+                if not parts:
+                    # 빈 설계도를 넘기면 three.js가 가구를 통째로 지운다(AGENTS.md 7.9). 남기지 않는다
+                    continue
+                recipe = {"parts": parts, "source": "gemini", "model": model, "version": OBJECT_PROMPT_VERSION}
+                (cache_root / f"{item['key']}.json").write_text(json.dumps(recipe, ensure_ascii=False), encoding="utf-8")
+                result[item["id"]] = recipe
     return result

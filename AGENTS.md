@@ -353,6 +353,13 @@ venv\Scripts\python.exe -m py_compile backend/app.py   # 저장 직후 확인
 > 정체성 단위(위치 무관)라 편집 뒤에는 새로 들어온 가구만 묻는다. 부품은 색·재질을
 > 가질 수 있다. 모양을 못 받은 가구는 `PARAMETRIC` 빌더(상품 형태 속성 반영)로 그린다.
 > 아래 타입 단위 설계도(`generate_furniture_parts`)는 이전 방식으로 남아 있다.
+>
+> **기본 표시는 AI 입체 그림이다**(`model2/gemini_furniture_views.py`, `POST /api/scene/views`).
+> 이미지 모델이 가구마다 앞·오른쪽·뒤·왼쪽 4방향 그림을 그리고(옆·뒤는 앞 그림을 보여 주며
+> 같은 가구를 돌린 모습으로), 흰 배경을 지운 PNG를 three.js가 가구 자리에 세운다. 판은
+> 카메라를 향하고 보는 방향에 맞는 그림으로 바뀐다. 숨긴 모형으로 고르기·끌기를 한다.
+> 서버는 한 번에 두 가구씩 그리고 남은 수를 돌려주며, 화면은 다 그릴 때까지 다시 부른다.
+> 그림이 없는 가구와 "입체 모형으로 보기"는 부품 모형(`generate_object_parts`)으로 그린다.
 
 three.js 의 가구 모양은 원래 `floorplan_3d.js` 의 `BUILDERS` 에 손으로 짜
 넣은 상자 조합이다(27종). 종류가 늘수록 품질 편차가 커서, Gemini 에게 형태를
