@@ -85,12 +85,36 @@ class CalibrationTests(unittest.TestCase):
         self.assertAlmostEqual(room["width_m"], 3.2, places=3)
 
     def test_reference_bed_sets_scale(self) -> None:
-        # 침대 긴 변이 방 가로의 0.5 → 방 가로 4.0m
+        # 침대 긴 변이 방 가로의 0.5 → 기준 추정 4.0m. 사전값(긴 변 4m → 가로 3.2m)
+        # 쪽으로 조금 당겨지지만 침대는 가중치가 커서 추정 쪽에 가깝다
         objects = [{"id": "bed_1", "type": "bed", "category": "bed", "w": 0.5, "h": 0.3, "confidence": 1.0}]
         room = scene_graph.calibrate_room(0.8, objects)
         self.assertEqual(room["scale_source"], "reference_objects")
-        self.assertAlmostEqual(room["width_m"], 4.0, places=2)
-        self.assertEqual(room["scale_references"][0]["type"], "bed")
+        self.assertGreater(room["width_m"], 3.6)
+        self.assertLess(room["width_m"], 4.0)
+        self.assertEqual(room["scale_references"][0]["width_estimate_m"], 4.0)
+
+    def test_weak_reference_is_pulled_toward_typical_room(self) -> None:
+        # 책상 하나만으로 방 가로 2.0m가 나오면 사전값(3.2m) 쪽으로 크게 당긴다
+        objects = [{"id": "desk_1", "type": "desk", "category": "desk", "w": 0.5, "h": 0.24, "confidence": 0.5}]
+        room = scene_graph.calibrate_room(0.8, objects)
+        self.assertEqual(room["scale_references"][0]["width_estimate_m"], 2.0)
+        self.assertGreater(room["width_m"], 2.6)
+
+    def test_wall_mounted_long_side_runs_along_wall_and_is_thin(self) -> None:
+        analysis = _analysis()
+        # 분석기가 TV의 긴 변을 벽과 수직으로 준 경우
+        analysis["objects"].append(
+            {"id": "tv_1", "category": "tv", "x": 0.95, "y": 0.5, "width": 0.2, "depth": 0.06,
+             "rotation_deg": 0, "wall_anchors": ["right"], "confidence": 0.8}
+        )
+        graph = scene_graph.from_analysis(analysis, width_m=4.0, depth_m=5.0)
+        tv = next(o for o in graph["objects"] if o["id"] == "tv_1")
+        self.assertAlmostEqual(tv["w_m"], 0.8, places=3)
+        self.assertLessEqual(tv["d_m"], scene_graph.WALL_MOUNTED_MAX_DEPTH_M)
+        self.assertEqual(tv["rotation_deg"], 90.0)
+        # 3D 기준으로 바닥면이 방 밖으로 나가지 않는다
+        self.assertEqual(metrics.wall_metrics([dict(tv, wall_mounted=False, type="cabinet")], graph["room"])["wall_penetrations"], 0)
 
     def test_falls_back_to_default_without_references(self) -> None:
         room = scene_graph.calibrate_room(0.8, [{"type": "plant", "w": 0.1, "h": 0.1}])
@@ -155,7 +179,8 @@ class SyncTests(unittest.TestCase):
         graph = scene_graph.from_analysis(_analysis())
         m = layout_metrics(graph)
         root = ET.fromstring(render_svg(graph))
-        self.assertEqual(_floor_box(root), (m["floor_x"], m["floor_y"], m["floor_w"], m["floor_h"]))
+        for got, expected in zip(_floor_box(root), (m["floor_x"], m["floor_y"], m["floor_w"], m["floor_h"])):
+            self.assertAlmostEqual(got, expected, places=2)
 
     def test_low_confidence_object_is_marked(self) -> None:
         svg = render_svg(scene_graph.from_analysis(_analysis()))

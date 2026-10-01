@@ -303,7 +303,8 @@ def render_svg(layout: dict[str, Any], *, title: str | None = None) -> str:
         f'<rect x="0" y="0" width="{_f(m["canvas_w"])}" height="{_f(m["canvas_h"])}" fill="#faf7f2" stroke="none"/>',
         # 벽(바깥 테두리) — 바닥보다 커서 _floor_box의 '가장 작은 rect'에 걸리지 않는다
         f'<rect x="{_f(fx - 14)}" y="{_f(fy - 14)}" width="{_f(fw + 28)}" height="{_f(fh + 28)}" fill="{wall_color}" stroke="none"/>',
-        f'<rect x="{_f(fx)}" y="{_f(fy)}" width="{_f(fw)}" height="{_f(fh)}" fill="url(#sg-planks)" stroke="{_shade(floor_color, 0.7)}" stroke-width="1" data-floor="true"/>',
+        # 바닥은 편집기가 좌표 환산 기준으로 읽으므로 반올림 오차를 줄이려 소수 3자리로 쓴다
+        f'<rect x="{fx:.3f}" y="{fy:.3f}" width="{fw:.3f}" height="{fh:.3f}" fill="url(#sg-planks)" stroke="{_shade(floor_color, 0.7)}" stroke-width="1" data-floor="true"/>',
     ]
 
     objects = sorted(

@@ -140,6 +140,14 @@ REFERENCE_EXCLUDED_CATEGORIES = {"armchair", "loveseat", "sofa_bed", "bunk_bed",
 # 실측 없이 추정한 방의 긴 변 허용 범위(m). 사진 한 장 분석의 크기 오차가 커서
 # 주거 공간에서 흔한 범위로 묶는다.
 ESTIMATE_LONG_SIDE_RANGE = (2.6, 7.0)
+# 기준 가구 추정을 일반적인 방 크기(긴 변 DEFAULT_LONG_SIDE_M) 쪽으로 당기는 강도.
+# 기준 가구 가중치 합이 이 값보다 작으면 사전값 쪽이 더 크게 반영된다.
+# 침대 하나(가중치 1.0 × 신뢰도)면 추정이 우세하고, 책상 하나(0.4 × 신뢰도)면
+# 사전값에 가깝게 나온다. 정답 데이터가 생기면 이 값을 다시 맞춘다.
+PRIOR_WEIGHT = 0.6
+# 벽걸이 객체의 최대 두께(m). 3D가 벽에서 WALL_GAP_M 떨어진 곳에 중심을 두므로
+# 이보다 두꺼우면 벽을 뚫고 나간다.
+WALL_MOUNTED_MAX_DEPTH_M = 0.08
 
 # 상품처럼 크기가 비어 들어온 객체에 쓰는 표준 크기(폭, 깊이, m)
 DEFAULT_SIZES = {
@@ -304,7 +312,15 @@ def calibrate_room(
         ]
         if plausible:
             source = "reference_objects"
-            width_m = _weighted_median(plausible)
+            estimate = _weighted_median(plausible)
+            # 사진 한 장의 가구 크기는 오차가 커서, 기준이 약할 때는 사전값과
+            # 로그 공간에서 가중 평균한다(곱셈 오차라 로그 평균이 맞다)
+            prior = DEFAULT_LONG_SIDE_M * (1.0 if aspect >= 1.0 else aspect)
+            total = sum(weight for _, weight in plausible)
+            width_m = math.exp(
+                (total * math.log(estimate) + PRIOR_WEIGHT * math.log(prior))
+                / (total + PRIOR_WEIGHT)
+            )
             depth_m = width_m / aspect
             low, high = ESTIMATE_LONG_SIDE_RANGE
             long_side = max(width_m, depth_m)
@@ -495,6 +511,13 @@ def _place_wall_mounted(graph: dict[str, Any]) -> None:
         if wall not in WALLS:
             wall = _nearest_wall(obj["cx"], obj["cy"], W, D)
             obj["wall"] = wall
+        # 분석기가 벽에 붙였다면서 긴 변을 벽과 수직으로 주는 경우가 있다
+        # (TV가 벽을 뚫고 나감). 벽걸이는 긴 변이 벽을 따라가고 얇아야 하므로
+        # 방향과 무관하게 긴 변 = 폭, 짧은 변(최대 8cm) = 두께로 다시 정한다.
+        long_side = max(float(obj["w_m"]), float(obj["d_m"]))
+        short_side = min(float(obj["w_m"]), float(obj["d_m"]))
+        obj["w_m"] = long_side
+        obj["d_m"] = min(short_side, WALL_MOUNTED_MAX_DEPTH_M)
         obj["rotation_deg"] = WALL_ROTATION[wall]
         if wall == "top":
             obj["cy"] = WALL_GAP_M
