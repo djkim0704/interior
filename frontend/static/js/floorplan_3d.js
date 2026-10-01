@@ -807,7 +807,7 @@ function init() {
   const toggle = document.getElementById("floorplanViewToggle");
   const autostart = host.dataset.autostart === "true";
 
-  const data = readScene();
+  let data = readScene();
   const status = document.getElementById("floorplan3dStatus");
 
   if (!data || !data.objects || !data.objects.length) {
@@ -897,6 +897,23 @@ function init() {
         other.classList.toggle("active", other === button);
       });
     });
+  });
+
+  // 2D 편집을 저장하면 새 배치가 온다. 열려 있던 3D를 같은 배치로 다시 세운다.
+  window.addEventListener("floorplan:scene-updated", (event) => {
+    const next = event.detail;
+    if (!next || !next.room || !next.objects) return;
+    // 가구 형태 설계도는 배치와 무관하므로 이어서 쓴다
+    if (data && data.furniture_parts && !next.furniture_parts) {
+      next.furniture_parts = data.furniture_parts;
+    }
+    data = next;
+    const visible = !host.classList.contains("d-none");
+    if (viewer) {
+      viewer.dispose();
+      viewer = null;
+    }
+    if (visible) show3d();
   });
 
   // 전용 화면은 사용자가 누를 것도 없이 바로 3D를 보여준다

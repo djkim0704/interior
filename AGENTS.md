@@ -212,6 +212,10 @@ frontend/templates/, static/      Jinja 템플릿과 정적 파일
 - legacy 필드만 채워 넣은 객체(상품 추가 등)는 `ensure()`가 미터 값을 복원한다.
 - 2D 렌더러를 Gemini로 되돌리려면 `FLOORPLAN_2D_RENDERER=gemini`. 개선 전후
   비교 실험용으로만 남겨 둔 경로다.
+- 배치 보정은 `model2/placement_solver.py` 하나가 맡는다(충돌·벽·문 앞·동선).
+  분석 직후, 상품 추가(`ensure`, 새 객체만), 편집 저장(사용자가 옮긴 가구는
+  고정, 동선 보정 없음) 때 돈다. 이동 사유는 `solver_adjustments`에 남는다.
+  `source`가 `user`·`selected_product`인 가구는 움직이지 않는다.
 
 평면도 SVG는 Scene Graph의 객체 id와 **정확히 같은** 그룹 id를 가져야 한다.
 

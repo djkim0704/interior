@@ -166,18 +166,36 @@ def evaluate_outputs(
 
 # ---------------------------------------------------------------- cached 모드
 
-def cached_runs(directory: Path) -> list[str]:
+def _scene_digest(path: Path) -> str:
+    import hashlib
+
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def cached_runs(directory: Path, dedupe: bool = True) -> list[str]:
+    """측정할 캐시 이름 목록.
+
+    같은 사진을 여러 번 올리면 분석 JSON이 그대로 복사된다(캐시 재사용). 그대로
+    세면 한 방이 수십 번 집계돼 평균을 좌우하므로, 분석 JSON 내용이 같은 것은
+    하나만 남긴다.
+    """
     stems = []
+    seen: set[str] = set()
     for scene_path in sorted(directory.glob("*_model2_scene.json")):
         stem = scene_path.name[: -len("_model2_scene.json")]
         if (directory / f"{stem}_model2_layout.json").exists() and (
             directory / f"{stem}_model2_floorplan.svg"
         ).exists():
+            if dedupe:
+                digest = _scene_digest(scene_path)
+                if digest in seen:
+                    continue
+                seen.add(digest)
             stems.append(stem)
     return stems
 
 
-def run_cached(directory: Path, clearance: float, rebuild: bool = False) -> list[dict[str, Any]]:
+def run_cached(directory: Path, clearance: float, rebuild: bool = False, dedupe: bool = True) -> list[dict[str, Any]]:
     """캐시된 결과물을 측정한다.
 
     rebuild=True면 같은 분석 JSON에서 현재 코드로 layout과 SVG를 다시 만든다.
@@ -185,7 +203,7 @@ def run_cached(directory: Path, clearance: float, rebuild: bool = False) -> list
     """
     rows = []
     rebuild_dir = ROOT / "output" / "eval" / "rebuild"
-    for stem in cached_runs(directory):
+    for stem in cached_runs(directory, dedupe=dedupe):
         entry: dict[str, Any] = {"name": stem}
         try:
             scene = json.loads((directory / f"{stem}_model2_scene.json").read_text(encoding="utf-8"))
@@ -410,20 +428,42 @@ def main(argv: list[str] | None = None) -> int:
     cached = sub.add_parser("cached", help="이미 생성된 결과물을 측정 (API 0회)")
     cached.add_argument("--dir", type=Path, default=GENERATED)
     cached.add_argument("--rebuild", action="store_true", help="같은 분석 JSON으로 현재 코드의 layout·SVG를 다시 만들어 측정")
+    cached.add_argument("--keep-duplicates", action="store_true", help="같은 분석 JSON(같은 사진 재업로드)도 따로 센다")
+    resum = sub.add_parser("resummarize", help="기존 결과 JSON을 중복 제거해 다시 요약")
+    resum.add_argument("report", type=Path)
+    resum.add_argument("--dir", type=Path, default=GENERATED)
+    resum.add_argument("--only-names-from", type=Path, default=None, help="이 결과 JSON에 있는 방만 남긴다(같은 방 집합으로 비교할 때)")
     live = sub.add_parser("run", help="사진 폴더를 파이프라인에 통과시켜 측정")
     live.add_argument("rooms", type=Path)
     group = live.add_mutually_exclusive_group()
     group.add_argument("--record", action="store_true", help="실제 호출 + 응답 저장 (유료)")
     group.add_argument("--replay", action="store_true", help="저장된 응답만 사용 (API 0회)")
     live.add_argument("--tag", default=None, help="실행 이름 (기본: 자동)")
+    resum.add_argument("--out", type=Path, default=None)
     for p in (cached, live):
         p.add_argument("--out", type=Path, default=None, help="결과 JSON 경로")
         p.add_argument("--clearance", type=float, default=metrics.DEFAULT_CLEARANCE_M)
         p.add_argument("--label", default="", help="결과에 남길 설명 (예: baseline)")
     args = parser.parse_args(argv)
 
+    if args.command == "resummarize":
+        report = json.loads(args.report.read_text(encoding="utf-8"))
+        keep = set(cached_runs(args.dir, dedupe=True))
+        if args.only_names_from:
+            other = json.loads(args.only_names_from.read_text(encoding="utf-8"))
+            keep &= {r["name"] for r in other["rooms"]}
+        report["rooms"] = [r for r in report["rooms"] if r["name"] in keep]
+        report["summary"] = summarize(report["rooms"])
+        report["deduplicated"] = True
+        text = json.dumps(report, ensure_ascii=False, indent=2)
+        out = args.out or args.report
+        out.write_text(text, encoding="utf-8")
+        print(f"저장: {out}")
+        print(json.dumps(report["summary"], ensure_ascii=False, indent=2))
+        return 0
+
     if args.command == "cached":
-        rows = run_cached(args.dir, args.clearance, rebuild=args.rebuild)
+        rows = run_cached(args.dir, args.clearance, rebuild=args.rebuild, dedupe=not args.keep_duplicates)
         mode = "cached_rebuild" if args.rebuild else "cached"
     else:
         mode = "replay" if args.replay else "record" if args.record else "off"

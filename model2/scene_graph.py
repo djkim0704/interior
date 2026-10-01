@@ -365,8 +365,13 @@ def from_analysis(
     width_m: float | None = None,
     depth_m: float | None = None,
     ceiling_m: float | None = None,
+    solve: bool = True,
 ) -> dict[str, Any]:
-    """normalize_layout 결과(0~1 정규화 좌표) → Scene Graph."""
+    """normalize_layout 결과(0~1 정규화 좌표) → Scene Graph.
+
+    solve=True면 충돌·벽·동선 보정(placement_solver)까지 거친다. 보정 전 상태가
+    필요한 실험(보정 효과 측정)에서만 False로 둔다.
+    """
     room_in = scene.get("room") or {}
     aspect = _number(room_in.get("aspect_ratio_width_to_depth"), 0.75, MIN_ASPECT, MAX_ASPECT)
     if width_m and depth_m:
@@ -483,6 +488,10 @@ def from_analysis(
         "history": [{"ts": round(time.time(), 3), "source": "ai", "action": "analyze"}],
     }
     _place_wall_mounted(graph)
+    if solve:
+        from .placement_solver import solve as solve_placement
+
+        solve_placement(graph)
     for obj in graph["objects"]:
         obj["edit_origin"] = _origin(obj)
     return sync_legacy(graph)
@@ -508,7 +517,9 @@ def _place_wall_mounted(graph: dict[str, Any]) -> None:
         if obj["type"] not in WALL_MOUNTED_TYPES:
             continue
         wall = obj.get("wall")
-        if wall not in WALLS:
+        # 사용자가 직접 옮긴 벽걸이(거울을 다른 벽으로 옮기는 등)는 놓은 자리에서
+        # 가장 가까운 벽에 붙인다. 원래 벽으로 되돌리면 사용자의 의도를 무시하게 된다.
+        if wall not in WALLS or obj.get("source") == "user":
             wall = _nearest_wall(obj["cx"], obj["cy"], W, D)
             obj["wall"] = wall
         # 분석기가 벽에 붙였다면서 긴 변을 벽과 수직으로 주는 경우가 있다
@@ -556,13 +567,16 @@ def is_scene_graph(layout: Any) -> bool:
     return isinstance(layout, dict) and layout.get("schema") == SCHEMA
 
 
-def ensure(layout: dict[str, Any]) -> dict[str, Any]:
+def ensure(layout: dict[str, Any], *, solve_new: bool = True) -> dict[str, Any]:
     """기존 라우트를 거친 Scene Graph를 다시 일관된 상태로 맞춘다.
 
     상품 추가처럼 legacy 필드만 채워 넣은 객체는 미터 값을 legacy에서 복원한다.
-    크기가 0이면 타입별 표준 크기를 쓴다.
+    크기가 0이면 타입별 표준 크기를 쓴다. solve_new=True면 새로 들어온 객체만
+    빈자리로 옮긴다(기존 가구는 그대로 둔다). 고정 슬롯(PURCHASE_POSITIONS)에
+    놓인 상품이 다른 가구와 겹치던 문제를 여기서 푼다.
     """
     graph = copy.deepcopy(layout)
+    new_ids: list[str] = []
     room = graph["room"]
     W, D = float(room["width_m"]), float(room["depth_m"])
     used_ids = {str(o.get("id")) for o in graph.get("objects") or [] if o.get("id")}
@@ -601,8 +615,15 @@ def ensure(layout: dict[str, Any]) -> dict[str, Any]:
             used_ids.add(candidate)
         obj.setdefault("label", kind)
         obj.setdefault("confidence", 1.0 if obj.get("source") == "selected_product" else 0.5)
-        obj["edit_origin"] = _origin(obj)
+        new_ids.append(str(obj["id"]))
     _place_wall_mounted(graph)
+    if new_ids and solve_new:
+        from .placement_solver import solve as solve_placement
+
+        solve_placement(graph, movable_ids=new_ids)
+    for obj in graph.get("objects") or []:
+        if str(obj.get("id")) in new_ids or "edit_origin" not in obj:
+            obj["edit_origin"] = _origin(obj)
     return sync_legacy(graph)
 
 
@@ -652,12 +673,24 @@ def apply_svg_edit(
     room = layout["room"]
     floor_x, floor_y, floor_w, floor_h = floor_box
     origin = origin or target.get("edit_origin") or _origin(target)
-    target["cx"] = min(1.0, max(0.0, (center_px[0] - floor_x) / floor_w)) * float(room["width_m"])
-    target["cy"] = min(1.0, max(0.0, (center_px[1] - floor_y) / floor_h)) * float(room["depth_m"])
-    target["w_m"] = float(origin["w_m"]) * scale
-    target["d_m"] = float(origin["d_m"]) * scale
-    target["rotation_deg"] = (float(origin["rotation_deg"]) + angle) % 360
-    target["source"] = "user" if target.get("source") == "ai" else target.get("source")
+    cx = min(1.0, max(0.0, (center_px[0] - floor_x) / floor_w)) * float(room["width_m"])
+    cy = min(1.0, max(0.0, (center_px[1] - floor_y) / floor_h)) * float(room["depth_m"])
+    w_m = float(origin["w_m"]) * scale
+    d_m = float(origin["d_m"]) * scale
+    rotation = (float(origin["rotation_deg"]) + angle) % 360
+    # 편집기는 손대지 않은 가구도 함께 보낸다. 실제로 바뀐 것만 '사용자 수정'으로
+    # 표시해야 보정기가 나머지 가구를 비켜 줄 수 있다. 1cm·1°는 픽셀 반올림 수준이다.
+    changed = (
+        math.dist((cx, cy), (float(target["cx"]), float(target["cy"]))) > 0.01
+        or abs(w_m - float(target["w_m"])) > 0.01
+        or abs(d_m - float(target["d_m"])) > 0.01
+        or min(abs(rotation - float(target["rotation_deg"])) % 360, 360 - abs(rotation - float(target["rotation_deg"])) % 360) > 1.0
+    )
+    if not changed:
+        return False
+    target.update(cx=cx, cy=cy, w_m=w_m, d_m=d_m, rotation_deg=rotation)
+    if target.get("source") == "ai":
+        target["source"] = "user"
     target["user_rotation"] = angle
     target["user_scale"] = scale
     return True

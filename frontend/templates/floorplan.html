@@ -153,10 +153,10 @@
 
 {% block extra_js %}
 <script
-  src="{{ url_for('static', filename='js/floorplan_drag.js', v='20260730-rebind-fix') }}"
+  src="{{ url_for('static', filename='js/floorplan_drag.js', v='20261001-solver') }}"
 ></script>
 <script
-  src="{{ url_for('static', filename='js/floorplan_edit.js', v='20260730-rebind-fix') }}"
+  src="{{ url_for('static', filename='js/floorplan_edit.js', v='20261001-solver') }}"
   data-save-url="{{ url_for('save_floorplan_edit') }}"
 ></script>
 
@@ -177,7 +177,7 @@
   </script>
   <script
     type="module"
-    src="{{ url_for('static', filename='js/floorplan_3d.js', v='20261001-scene-graph') }}"
+    src="{{ url_for('static', filename='js/floorplan_3d.js', v='20261001-solver') }}"
   ></script>
 {% endif %}
 {% endblock %}

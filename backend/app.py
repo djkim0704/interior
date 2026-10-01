@@ -64,6 +64,7 @@ from model2 import (
 )
 from model2 import floorplan_3d
 from model2 import scene_graph
+from model2.scene_render_2d import render_svg as render_scene_graph_svg
 from model2 import gemini_room_svg_render
 from model2 import gemini_furniture_parts
 from model2.gemini_retry import (
@@ -2081,6 +2082,8 @@ def save_floorplan_edit():
             )
             or ""
         )
+        refreshed_svg = None
+        refreshed_scene = None
         if layout_path and os.path.isfile(layout_path):
             current_layout = json.loads(
                 Path(layout_path).read_text(encoding="utf-8")
@@ -2110,13 +2113,62 @@ def save_floorplan_edit():
             session["floorplan_layout_file"] = (
                 edited_layout_path.name
             )
+
+            # Scene Graph면 브라우저가 보낸 SVG 대신 보정된 그래프로 다시 그려
+            # 저장한다. 보정기가 다른 가구를 비켜 줬을 수 있어, 그대로 두면
+            # 화면의 2D와 저장된 배치(=3D)가 다시 어긋난다.
+            if scene_graph.is_scene_graph(
+                edited_layout
+            ):
+                refreshed_svg = (
+                    model2_floorplan
+                    .prepare_floorplan_edit_markup(
+                        render_scene_graph_svg(
+                            edited_layout
+                        ),
+                        edited_layout,
+                    )
+                )
+                output_path.write_text(
+                    refreshed_svg,
+                    encoding="utf-8",
+                )
+                plan, _ = current_room_plan()
+                refreshed_scene = (
+                    floorplan_3d.build_scene(
+                        edited_layout,
+                        plan,
+                    )
+                )
         session["edited_floorplan_file"] = filename
         session["edited_floorplan_upload"] = str(
             session.get("uploaded_file")
             or ""
         )
         session["original_floorplan_file"] = filename
-        return jsonify({"ok": True, "filename": filename})
+        return jsonify(
+            {
+                "ok": True,
+                "filename": filename,
+                # 화면을 저장된 배치와 맞추도록 새 2D·3D를 돌려준다
+                "svg": refreshed_svg,
+                "scene_3d": refreshed_scene,
+                "adjustments": (
+                    [
+                        item
+                        for item in (
+                            edited_layout.get(
+                                "solver_adjustments"
+                            )
+                            or []
+                        )
+                        if item.get("units") == "m"
+                    ][-10:]
+                    if refreshed_svg
+                    else []
+                ),
+            }
+        )
     except Exception as exc:
         print(f"[floorplan-edit] 저장 실패: {exc}")
         return jsonify(

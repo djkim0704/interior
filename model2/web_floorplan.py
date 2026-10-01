@@ -3692,5 +3692,10 @@ def _apply_edits_to_scene_graph(
             origin=origin,
         ):
             changed.append(scene_id)
+    # 사용자가 옮긴 가구는 고정하고, 그 가구와 겹치게 된 다른 가구만 비켜 준다.
+    # 동선 보정은 하지 않는다. 사용자가 보지 않은 가구까지 크게 움직이면 혼란스럽다.
+    from .placement_solver import solve as solve_placement
+
+    solve_placement(graph, locked_ids=changed, walkway=False)
     scene_graph.append_history(graph, "user", "svg_edit", objects=changed)
     return scene_graph.sync_legacy(graph)

@@ -245,7 +245,7 @@ def _door(w: float, d: float, c: str) -> str:
     # 벽에 붙은 문: 문짝 + 열리는 궤적. 방 안쪽(+y)으로 열린다고 본다.
     leaf = w
     return (
-        f'<rect x="{_f(-w / 2)}" y="{_f(-d / 2 - 4)}" width="{_f(w)}" height="{_f(d + 8)}" fill="#fbf8f2" stroke="none"/>'
+        f'<rect x="{_f(-w / 2)}" y="{_f(-d / 2)}" width="{_f(w)}" height="{_f(d)}" fill="#fbf8f2" stroke="none"/>'
         f'<line x1="{_f(-w / 2)}" y1="0" x2="{_f(-w / 2)}" y2="{_f(leaf)}" stroke="#5b4a3c" stroke-width="2.2" data-annotation="true"/>'
         f'<path d="M{_f(-w / 2)} {_f(leaf)} A{_f(leaf)} {_f(leaf)} 0 0 0 {_f(w / 2)} 0" fill="none" stroke="#8c7a66" stroke-width="1" stroke-dasharray="4 3" data-annotation="true"/>'
     )
@@ -253,7 +253,7 @@ def _door(w: float, d: float, c: str) -> str:
 
 def _window(w: float, d: float, c: str) -> str:
     return (
-        f'<rect x="{_f(-w / 2)}" y="{_f(-d / 2 - 5)}" width="{_f(w)}" height="{_f(d + 10)}" fill="#f4fafc" stroke="#6f8f9c" stroke-width="1.2"/>'
+        f'<rect x="{_f(-w / 2)}" y="{_f(-d / 2)}" width="{_f(w)}" height="{_f(d)}" fill="#f4fafc" stroke="#6f8f9c" stroke-width="1.2"/>'
         f'<line x1="{_f(-w / 2)}" y1="0" x2="{_f(w / 2)}" y2="0" stroke="#6f8f9c" stroke-width="1.2"/>'
     )
 
@@ -318,9 +318,10 @@ def render_svg(layout: dict[str, Any], *, title: str | None = None) -> str:
         cx, cy = fx + float(obj["cx"]) * px, fy + float(obj["cy"]) * px
         color = _color(obj)
         if kind == "door":
-            body = _door(w, max(d, 8), color)
+            # 문·창은 3D와 같은 두께(d)로 그린다. 틀을 굵게 그리면 2D·3D 외곽이 달라진다
+            body = _door(w, d, color)
         elif kind == "window":
-            body = _window(w, max(d, 8), color)
+            body = _window(w, d, color)
         else:
             body = SHAPES.get(kind, _generic)(w, d, color)
         confidence = float(obj.get("confidence") if obj.get("confidence") is not None else 1.0)
