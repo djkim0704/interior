@@ -28,6 +28,7 @@ from google import genai
 from google.genai import types
 
 from .gemini_retry import call_with_retry
+from .gemini_telemetry import instrument
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -55,7 +56,7 @@ def _client() -> genai.Client:
     api_key = os.getenv("GEMINI_API_KEY", "").strip()
     if not api_key:
         raise RuntimeError("GEMINI_API_KEY 가 없습니다.")
-    return genai.Client(api_key=api_key)
+    return instrument(genai.Client(api_key=api_key))
 
 
 def _target_types(scene: dict[str, Any]) -> list[str]:

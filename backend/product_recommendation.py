@@ -726,7 +726,9 @@ guess materials or forms that are not visible.
                 ".jpeg": "image/jpeg",
                 ".jpg": "image/jpeg",
             }.get(image_path.suffix.lower(), "image/jpeg")
-            client = genai.Client(api_key=api_key)
+            from model2.gemini_telemetry import instrument
+
+            client = instrument(genai.Client(api_key=api_key))
             response = client.models.generate_content(
                 model=model,
                 contents=[

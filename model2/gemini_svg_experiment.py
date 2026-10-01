@@ -21,6 +21,13 @@ from google import genai
 from google.genai import types
 from PIL import Image
 
+try:
+    from .gemini_telemetry import instrument
+except ImportError:
+    # 파일을 직접 실행할 때도 동작하도록 하는 호환 경로
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from model2.gemini_telemetry import instrument
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "model2" / "output" / "gemini_svg_experiment"
@@ -84,13 +91,13 @@ def _client() -> genai.Client:
     api_key = os.getenv("GEMINI_API_KEY", "").strip()
     if not api_key:
         raise RuntimeError("프로젝트 .env에 GEMINI_API_KEY가 없습니다.")
-    return genai.Client(
+    return instrument(genai.Client(
         api_key=api_key,
         http_options=types.HttpOptions(
             client_args={"trust_env": False},
             async_client_args={"trust_env": False},
         ),
-    )
+    ))
 
 
 def _extract_svg(raw: str) -> str:

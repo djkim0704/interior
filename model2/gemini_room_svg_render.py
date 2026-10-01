@@ -18,6 +18,7 @@ from google import genai
 from google.genai import types
 
 from .gemini_retry import GeminiBusyError, call_with_retry
+from .gemini_telemetry import instrument
 from PIL import Image, ImageDraw, ImageOps
 
 
@@ -70,7 +71,7 @@ def _client() -> genai.Client:
     api_key = os.getenv("GEMINI_API_KEY", "").strip()
     if not api_key:
         raise RuntimeError("GEMINI_API_KEY가 없습니다.")
-    return genai.Client(
+    return instrument(genai.Client(
         api_key=api_key,
         http_options=types.HttpOptions(
             client_args={"trust_env": False},
@@ -79,7 +80,7 @@ def _client() -> genai.Client:
             # SDK 기본 5회 재시도까지 겹치면 한 모델의 503에 수 분을 쓴다.
             retry_options=types.HttpRetryOptions(attempts=1),
         ),
-    )
+    ))
 
 
 def _room_svg_models(primary: str) -> list[str]:

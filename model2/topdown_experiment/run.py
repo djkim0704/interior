@@ -28,11 +28,15 @@ try:
     from .illustrator import render_illustration
     from .layout_solver import ALLOWED_RELATIONS, solve_layout
     from .renderer_3d import render_room_3d
+    from ..gemini_telemetry import instrument
 except ImportError:
     # 파일을 직접 실행할 때도 동작하도록 하는 호환 경로
     from illustrator import render_illustration
     from layout_solver import ALLOWED_RELATIONS, solve_layout
     from renderer_3d import render_room_3d
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    from model2.gemini_telemetry import instrument
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -159,7 +163,7 @@ def _client() -> genai.Client:
     api_key = os.getenv("GEMINI_API_KEY", "").strip()
     if not api_key:
         raise RuntimeError("프로젝트 .env에 GEMINI_API_KEY가 없습니다.")
-    return genai.Client(
+    return instrument(genai.Client(
         api_key=api_key,
         http_options=types.HttpOptions(
             # SDK 기본값은 "재시도 안 함"(stop_after_attempt(1))이라
@@ -169,7 +173,7 @@ def _client() -> genai.Client:
             client_args={"trust_env": False},
             async_client_args={"trust_env": False},
         ),
-    )
+    ))
 
 
 def _ensure_not_truncated(response: Any) -> None:

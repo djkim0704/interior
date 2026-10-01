@@ -51,3 +51,9 @@ images/final/*
 
 # YOLO 가중치 (최초 실행 시 자동 다운로드)
 *.pt
+
+# 평가 산출물 — Gemini 호출 기록·재생용 응답·평가 실행 결과 (재생성 가능)
+#   기준값처럼 남겨야 하는 결과는 docs/metrics/ 에 따로 저장한다
+output/metrics/
+output/gemini_replay/
+output/eval/

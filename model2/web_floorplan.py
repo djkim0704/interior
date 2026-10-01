@@ -19,6 +19,7 @@ import requests
 from PIL import Image
 
 from .gemini_retry import call_with_retry
+from .gemini_telemetry import instrument
 from .gemini_svg_experiment import _extract_svg, generate_svg_text
 from .product_icon_svg import generate_product_icon_svg
 from .topdown_experiment.run import analyze_room
@@ -77,7 +78,7 @@ def _client() -> genai.Client:
     api_key = os.getenv("GEMINI_API_KEY", "").strip()
     if not api_key:
         raise RuntimeError("프로젝트 .env에 GEMINI_API_KEY가 없습니다.")
-    return genai.Client(
+    return instrument(genai.Client(
         api_key=api_key,
         http_options=types.HttpOptions(
             # SDK 기본값은 "재시도 안 함"이라 503/429 한 번에 바로 실패한다.
@@ -86,7 +87,7 @@ def _client() -> genai.Client:
             client_args={"trust_env": False},
             async_client_args={"trust_env": False},
         ),
-    )
+    ))
 
 
 def enrich_products_with_visual_profiles(
