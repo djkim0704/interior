@@ -468,6 +468,7 @@ def from_analysis(
             "color": raw.get("color"),
             "material": raw.get("material"),
             "pattern": raw.get("pattern"),
+            "photo_box": raw.get("photo_box"),
         }
         objects.append(obj)
 
@@ -581,27 +582,31 @@ def ensure(layout: dict[str, Any], *, solve_new: bool = True) -> dict[str, Any]:
     W, D = float(room["width_m"]), float(room["depth_m"])
     used_ids = {str(o.get("id")) for o in graph.get("objects") or [] if o.get("id")}
     for index, obj in enumerate(graph.get("objects") or []):
-        if all(key in obj for key in ("cx", "cy", "w_m", "d_m", "rotation_deg")):
-            continue
-        kind = object_type(obj.get("type") or obj.get("category"))
-        obj["type"] = kind
-        obj.setdefault("category", kind)
-        wall = str(obj.get("wall") or "none")
-        rotation = WALL_ROTATION.get(wall, 0.0) if kind in WALL_FACING_TYPES | WALL_MOUNTED_TYPES else 0.0
-        plan_w = _number(obj.get("w"), 0.0, 0.0, 1.0) * W
-        plan_d = _number(obj.get("h"), 0.0, 0.0, 1.0) * D
-        if plan_w <= 0.01 or plan_d <= 0.01:
-            w_m, d_m = DEFAULT_SIZES.get(kind, DEFAULT_SIZES["unknown"])
-        else:
-            w_m, d_m = local_from_plan(plan_w, plan_d, rotation)
-        obj.update(
-            cx=_number(obj.get("x"), 0.5, 0.0, 1.0) * W,
-            cy=_number(obj.get("y"), 0.5, 0.0, 1.0) * D,
-            w_m=w_m,
-            d_m=d_m,
-            rotation_deg=rotation,
-        )
+        has_metric = all(key in obj for key in ("cx", "cy", "w_m", "d_m", "rotation_deg"))
+        if not has_metric:
+            kind = object_type(obj.get("type") or obj.get("category"))
+            obj["type"] = kind
+            obj.setdefault("category", kind)
+            wall = str(obj.get("wall") or "none")
+            rotation = WALL_ROTATION.get(wall, 0.0) if kind in WALL_FACING_TYPES | WALL_MOUNTED_TYPES else 0.0
+            plan_w = _number(obj.get("w"), 0.0, 0.0, 1.0) * W
+            plan_d = _number(obj.get("h"), 0.0, 0.0, 1.0) * D
+            if plan_w <= 0.01 or plan_d <= 0.01:
+                w_m, d_m = DEFAULT_SIZES.get(kind, DEFAULT_SIZES["unknown"])
+            else:
+                w_m, d_m = local_from_plan(plan_w, plan_d, rotation)
+            obj.update(
+                cx=_number(obj.get("x"), 0.5, 0.0, 1.0) * W,
+                cy=_number(obj.get("y"), 0.5, 0.0, 1.0) * D,
+                w_m=w_m,
+                d_m=d_m,
+                rotation_deg=rotation,
+            )
+        # 교체 상품처럼 미터 값은 물려받았지만 id가 없는 객체도 있다
         if not obj.get("id"):
+            kind = object_type(obj.get("type") or obj.get("category"))
+            obj["type"] = kind
+            obj.setdefault("category", kind)
             if obj.get("source") == "selected_product":
                 base = f"product_{obj.get('product_marker') or index}"
             else:
@@ -613,7 +618,10 @@ def ensure(layout: dict[str, Any], *, solve_new: bool = True) -> dict[str, Any]:
                 suffix += 1
             obj["id"] = candidate
             used_ids.add(candidate)
-        obj.setdefault("label", kind)
+        if has_metric:
+            # 위치를 물려받은 객체는 빈자리로 옮기지 않는다(교체는 그 자리에 놓는 것)
+            continue
+        obj.setdefault("label", obj["type"])
         obj.setdefault("confidence", 1.0 if obj.get("source") == "selected_product" else 0.5)
         new_ids.append(str(obj["id"]))
     _place_wall_mounted(graph)

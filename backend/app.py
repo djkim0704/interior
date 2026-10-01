@@ -64,9 +64,12 @@ from model2 import (
 )
 from model2 import floorplan_3d
 from model2 import scene_graph
+from model2 import scene_edit
+from model2 import gemini_reanalyze
 from model2 import gemini_room_svg_render
 from model2 import gemini_furniture_parts
 from model2.gemini_retry import (
+    call_with_retry,
     GeminiBusyError,
     api_status_code,
 )
@@ -1757,6 +1760,7 @@ def floorplan():
     floorplan_error = None
     floorplan_status = 200
     scene_3d = None
+    review = None
 
     upload_path = os.path.join(
         UPLOAD_DIR,
@@ -1925,6 +1929,31 @@ def floorplan():
                         encoding="utf-8"
                     )
                 )
+                if scene_graph.is_scene_graph(
+                    editable_layout
+                ):
+                    # Scene Graph면 저장된 SVG 대신 그래프에서 다시 그린다.
+                    # 그래프가 유일한 원본이라 이게 항상 3D와 같은 그림이다.
+                    svg_markup = (
+                        model2_floorplan
+                        .render_floorplan_svg(
+                            editable_layout,
+                            GENERATED_DIR,
+                        )
+                    )
+                    detected = detected_furniture_from_graph(
+                        editable_layout
+                    )
+                    review = floorplan_review_data(
+                        editable_layout
+                    )
+                    session[
+                        "detected_furniture"
+                    ] = detected
+                    if "furniture_choices" in session:
+                        sync_furniture_choices(
+                            detected
+                        )
                 svg_markup = (
                     model2_floorplan
                     .prepare_floorplan_edit_markup(
@@ -2039,6 +2068,7 @@ def floorplan():
         render_template(
             "floorplan.html",
             plan=plan,
+            review=review,
             dimensions_provided=(
                 dimensions_provided
             ),
@@ -2154,6 +2184,13 @@ def save_floorplan_edit():
                 # 화면을 저장된 배치와 맞추도록 새 2D·3D를 돌려준다
                 "svg": refreshed_svg,
                 "scene_3d": refreshed_scene,
+                "uncertain": (
+                    scene_edit.uncertain_objects(
+                        edited_layout
+                    )
+                    if refreshed_svg
+                    else []
+                ),
                 "adjustments": (
                     [
                         item
@@ -2181,6 +2218,214 @@ def save_floorplan_edit():
 # STEP 4: 기존 가구 유지·제거 /
 # 구매할 가구 종류 선택
 # ──────────────────────────────────────────────────────
+def save_scene_graph_as_edit(graph):
+    """편집된 Scene Graph를 새 파일로 저장하고 세션이 그걸 보게 한다.
+
+    /floorplan/save-edit와 같은 세션 키를 쓴다. 어느 화면에서 고쳤든 다음 단계
+    (유지·제거, 상품 추가, 3D)가 같은 파일을 읽어야 한다.
+    """
+    token = uuid.uuid4().hex[:16]
+    layout_path = Path(GENERATED_DIR) / f"edited_layout_{token}.json"
+    layout_path.write_text(
+        json.dumps(graph, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    markup = model2_floorplan.prepare_floorplan_edit_markup(
+        model2_floorplan.render_floorplan_svg(graph, GENERATED_DIR),
+        graph,
+    )
+    svg_name = f"edited_floorplan_{token}.svg"
+    (Path(GENERATED_DIR) / svg_name).write_text(markup, encoding="utf-8")
+    session["edited_floorplan_layout_file"] = layout_path.name
+    session["floorplan_layout_file"] = layout_path.name
+    session["edited_floorplan_file"] = svg_name
+    session["edited_floorplan_upload"] = str(session.get("uploaded_file") or "")
+    session["original_floorplan_file"] = svg_name
+    return markup
+
+
+@app.post("/api/scene/edit")
+def edit_scene():
+    """2D·3D·검토 패널의 편집을 Scene Graph에 반영하고 새 2D·3D를 돌려준다.
+
+    body: {"ops": [...scene_edit 연산...], "context": "floorplan" | "final"}
+      floorplan — 평면도 화면. 3D는 기준 배치로 만든다.
+      final     — 결과·3D 미리보기 화면. 3D는 유지·제거·상품이 반영된 배치로 만든다.
+    """
+    if "uploaded_file" not in session:
+        return jsonify({"ok": False, "error": "업로드된 방 사진이 없습니다."}), 400
+    payload = request.get_json(silent=True) or {}
+    ops = payload.get("ops")
+    context = "final" if payload.get("context") == "final" else "floorplan"
+    base_path = resolve_session_generated_file("floorplan_layout_file") or ""
+    if not base_path or not os.path.isfile(base_path):
+        return jsonify({"ok": False, "error": "평면도 배치 정보가 없습니다."}), 400
+    base = json.loads(Path(base_path).read_text(encoding="utf-8"))
+    if not scene_graph.is_scene_graph(base):
+        return jsonify({"ok": False, "error": "이 평면도는 편집을 지원하지 않습니다. 사진을 다시 올려 주세요."}), 400
+    if not isinstance(ops, list):
+        return jsonify({"ok": False, "error": "편집 내용이 비어 있습니다."}), 400
+
+    base_ids = {str(o.get("id")) for o in base.get("objects") or []}
+    base_ops = [op for op in ops if isinstance(op, dict) and (op.get("op") == "add" or str(op.get("id")) in base_ids)]
+    product_ops = [op for op in ops if isinstance(op, dict) and op not in base_ops]
+    # 기준 배치에 없는 id는 수정 평면도의 상품이어야 한다. 아니면 잘못된 요청이다
+    product_ids = set()
+    modified_path = resolve_session_generated_file("modified_layout_file") or ""
+    if product_ops and modified_path and os.path.isfile(modified_path):
+        product_ids = {
+            str(o.get("id"))
+            for o in json.loads(Path(modified_path).read_text(encoding="utf-8")).get("objects") or []
+            if o.get("source") == "selected_product"
+        }
+    if any(str(op.get("id")) not in product_ids for op in product_ops):
+        return jsonify({"ok": False, "error": "해당 가구를 찾을 수 없습니다."}), 400
+    overrides = dict(session.get("product_overrides") or {})
+    for op in product_ops:
+        # 상품은 수정 평면도에만 있다. 위치·방향만 따로 기억했다가 다시 만들 때 적용한다
+        if op.get("op") not in {"move", "rotate"}:
+            return jsonify({"ok": False, "error": "선택한 상품은 이동과 회전만 할 수 있습니다."}), 400
+        entry = dict(overrides.get(str(op.get("id"))) or {})
+        try:
+            if op["op"] == "move":
+                entry.update(cx=float(op["cx"]), cy=float(op["cy"]))
+            else:
+                entry.update(rotation_deg=float(op["rotation_deg"]) % 360)
+        except (KeyError, TypeError, ValueError):
+            return jsonify({"ok": False, "error": "편집 값이 올바르지 않습니다."}), 400
+        overrides[str(op.get("id"))] = entry
+    session["product_overrides"] = overrides
+
+    try:
+        graph, changed = (
+            scene_edit.apply_ops(base, base_ops)
+            if base_ops
+            else (base, [])
+        )
+    except scene_edit.EditError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+    return jsonify(
+        scene_update_payload(
+            graph,
+            changed + [str(op.get("id")) for op in product_ops],
+            context,
+            saved=bool(base_ops),
+        )
+    )
+
+
+def scene_update_payload(graph, changed, context, *, saved):
+    """편집·재분석 뒤 화면을 갱신할 데이터. 2D(편집용), 수정 평면도, 3D, 확인 목록."""
+    markup = save_scene_graph_as_edit(graph) if saved else (
+        model2_floorplan.prepare_floorplan_edit_markup(
+            model2_floorplan.render_floorplan_svg(graph, GENERATED_DIR),
+            graph,
+        )
+    )
+    detected = detected_furniture_from_graph(graph)
+    session["detected_furniture"] = detected
+    if "furniture_choices" in session:
+        sync_furniture_choices(detected)
+
+    modified_markup = None
+    if session.get("modified_layout_file"):
+        svg_filename = create_modified_floorplan(
+            session.get("furniture_choices") or [],
+            load_session_json_cache("selected_products_file", default=[]) or [],
+        )
+        if svg_filename:
+            session["modified_floorplan_file"] = svg_filename
+            modified_markup = read_generated_svg(svg_filename)
+
+    plan, _ = current_room_plan()
+    scene_layout = graph
+    if context == "final":
+        final_path, _ = resolve_final_layout_path()
+        if final_path and os.path.isfile(final_path):
+            scene_layout = json.loads(Path(final_path).read_text(encoding="utf-8"))
+    with floorplan_generation_lock:
+        scene_3d = floorplan_3d.build_scene(scene_layout, plan)
+
+    return {
+        "ok": True,
+        "changed": changed,
+        "svg": markup,
+        "modified_svg": modified_markup,
+        "scene_3d": scene_3d,
+        "review": floorplan_review_data(graph),
+        "uncertain": scene_edit.uncertain_objects(graph),
+        "adjustments": [
+            item
+            for item in graph.get("solver_adjustments") or []
+            if item.get("units") == "m"
+        ][-10:],
+    }
+
+
+def floorplan_review_data(graph):
+    """평면도 화면의 확인 패널 데이터 (항목 18·10)."""
+    return {
+        "uncertain": scene_edit.uncertain_objects(graph),
+        "has_door": any(
+            o.get("type") == "door"
+            for o in graph.get("objects") or []
+        ),
+        "notes": {
+            str(o["id"]): o.get("refined_note")
+            for o in graph.get("objects") or []
+            if o.get("refined_note")
+        },
+        "types": [
+            [kind, label]
+            for kind, label in scene_edit.KOREAN_LABELS.items()
+            if kind not in {"door", "window"}
+        ],
+    }
+
+
+@app.post("/api/scene/reanalyze")
+def reanalyze_scene():
+    """확신이 낮은 가구만 Gemini로 다시 분석한다 (항목 17). 방 전체를 다시 묻지 않는다."""
+    if "uploaded_file" not in session:
+        return jsonify({"ok": False, "error": "업로드된 방 사진이 없습니다."}), 400
+    payload = request.get_json(silent=True) or {}
+    ids = payload.get("ids")
+    ids = [str(i) for i in ids] if isinstance(ids, list) and ids else None
+    base_path = resolve_session_generated_file("floorplan_layout_file") or ""
+    if not base_path or not os.path.isfile(base_path):
+        return jsonify({"ok": False, "error": "평면도 배치 정보가 없습니다."}), 400
+    base = json.loads(Path(base_path).read_text(encoding="utf-8"))
+    if not scene_graph.is_scene_graph(base):
+        return jsonify({"ok": False, "error": "이 평면도는 다시 확인을 지원하지 않습니다."}), 400
+    if not gemini_reanalyze.targets(base, ids):
+        return jsonify({"ok": False, "error": "다시 확인할 가구가 없습니다."}), 400
+    photo = Path(UPLOAD_DIR) / os.path.basename(str(session.get("uploaded_file")))
+    model = (
+        os.getenv("GEMINI_LAYOUT_MODEL", "").strip()
+        or os.getenv("GEMINI_ANALYSIS_MODEL", "").strip()
+        or model2_floorplan.DEFAULT_ANALYSIS_MODEL
+    )
+    try:
+        client = model2_floorplan._client()
+        graph, changed = call_with_retry(
+            gemini_reanalyze.reanalyze,
+            client,
+            photo,
+            base,
+            model=model,
+            ids=ids,
+            description="가구 다시 확인",
+        )
+    except GeminiBusyError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 503
+    except Exception as exc:
+        print(f"[reanalyze] 실패: {exc}")
+        return jsonify({"ok": False, "error": f"다시 확인하지 못했습니다: {exc}"}), 500
+    context = "final" if payload.get("context") == "final" else "floorplan"
+    return jsonify(scene_update_payload(graph, changed, context, saved=bool(changed)))
+
+
 @app.route(
     "/furniture-choice"
 )
@@ -2257,6 +2502,9 @@ def default_furniture_choices():
                 item.get(
                     "source_index"
                 )
+            ),
+            "scene_id": item.get(
+                "scene_id"
             ),
             "decision": "keep",
         }
@@ -3037,27 +3285,20 @@ def create_modified_floorplan(
             ):
                 continue
 
-            source_index = (
-                choice.get(
-                    "source_index"
-                )
+            target_index = choice_object_index(
+                choice,
+                layout.get(
+                    "objects",
+                    [],
+                ),
             )
 
-            if source_index is None:
+            if target_index is None:
                 continue
 
-            try:
-                remove_indices.add(
-                    int(
-                        source_index
-                    )
-                )
-
-            except (
-                TypeError,
-                ValueError,
-            ):
-                continue
+            remove_indices.add(
+                target_index
+            )
 
         original_objects = (
             layout.get(
@@ -3109,25 +3350,18 @@ def create_modified_floorplan(
             replacement_object = None
 
             if replacement_choice:
-                try:
-                    replacement_index = int(
-                        replacement_choice.get(
-                            "source_index"
-                        )
-                    )
-
-                    replacement_object = (
-                        original_objects[
-                            replacement_index
-                        ]
-                    )
-
-                except (
-                    TypeError,
-                    ValueError,
-                    IndexError,
-                ):
-                    replacement_object = None
+                replacement_index = choice_object_index(
+                    replacement_choice,
+                    original_objects,
+                )
+                replacement_object = (
+                    original_objects[
+                        replacement_index
+                    ]
+                    if replacement_index is not None
+                    and 0 <= replacement_index < len(original_objects)
+                    else None
+                )
 
             if replacement_object:
                 x = replacement_object.get(
@@ -3212,6 +3446,28 @@ def create_modified_floorplan(
                     "product_marker": (
                         marker
                     ),
+                    # Scene Graph면 교체 대상의 위치·크기·방향·벽을 그대로 물려받는다.
+                    # legacy 값만 넘기면 벽 방향을 고정 맵(wall_map)에서 다시 정해서
+                    # 교체한 가구가 엉뚱한 쪽을 보던 문제가 있었다.
+                    **(
+                        {
+                            key: replacement_object[key]
+                            for key in (
+                                "cx",
+                                "cy",
+                                "w_m",
+                                "d_m",
+                                "rotation_deg",
+                                "wall",
+                            )
+                            if key in replacement_object
+                        }
+                        if replacement_object
+                        and scene_graph.is_scene_graph(
+                            layout
+                        )
+                        else {}
+                    ),
                 }
             )
 
@@ -3228,6 +3484,30 @@ def create_modified_floorplan(
             modified_layout
         ):
             modified_layout = scene_graph.ensure(
+                modified_layout
+            )
+            # 결과 화면의 3D에서 사용자가 옮긴 상품 위치를 다시 적용한다.
+            # 수정 평면도는 선택이 바뀔 때마다 새로 만들어지므로 따로 들고 있어야 한다.
+            overrides = session.get(
+                "product_overrides"
+            ) or {}
+            for obj in modified_layout["objects"]:
+                override = overrides.get(
+                    str(obj.get("id"))
+                )
+                if (
+                    override
+                    and obj.get("source")
+                    == "selected_product"
+                ):
+                    obj.update(
+                        {
+                            key: float(value)
+                            for key, value in override.items()
+                            if key in {"cx", "cy", "rotation_deg"}
+                        }
+                    )
+            modified_layout = scene_graph.sync_legacy(
                 modified_layout
             )
             scene_graph.append_history(
@@ -3664,6 +3944,9 @@ def toggle_furniture():
         or {}
     )
 
+    target_scene_id = str(
+        data.get("scene_id") or ""
+    )
     try:
         target_source_index = int(
             data.get(
@@ -3675,6 +3958,9 @@ def toggle_furniture():
         TypeError,
         ValueError,
     ):
+        target_source_index = None
+
+    if target_source_index is None and not target_scene_id:
         return jsonify(
             {
                 "ok": False,
@@ -3712,8 +3998,14 @@ def toggle_furniture():
     found = False
 
     for choice in furniture_choices:
+        # scene id가 있으면 그걸로 찾는다. 검토 패널에서 가구를 지우거나 추가하면
+        # 순번(source_index)이 밀리기 때문이다.
         if (
-            choice.get(
+            str(choice.get("scene_id") or "")
+            == target_scene_id
+            if target_scene_id
+            and choice.get("scene_id")
+            else choice.get(
                 "source_index"
             )
             == target_source_index
@@ -4019,6 +4311,16 @@ def result():
         ],
     )
 
+    # 가구 선택 단계(/furniture-choice)를 임시로 건너뛰는 동안에도 결과 화면에서
+    # 유지·제거·교체를 고를 수 있게 기본 선택(전부 유지)을 만든다.
+    if (
+        "furniture_choices" not in session
+        and session.get("detected_furniture")
+    ):
+        session[
+            "furniture_choices"
+        ] = default_furniture_choices()
+
     furniture_choices = (
         session.get(
             "furniture_choices",
@@ -4070,6 +4372,9 @@ def result():
         modified_svg_markup=(
             modified_svg_markup
         ),
+        replaceable_types=sorted(
+            PURCHASE_LABELS
+        ),
         furniture_choices=(
             furniture_choices
         ),
@@ -4086,6 +4391,74 @@ def result():
 # ──────────────────────────────────────────────────────
 # STEP 6: 3D 배치 확인
 # ──────────────────────────────────────────────────────
+def detected_furniture_from_graph(graph):
+    """Scene Graph → 평면도 화면의 가구 목록. 선택은 순번이 아니라 scene id로 묶는다.
+
+    검토 패널에서 가구를 지우거나 추가하면 순번이 밀린다. 순번으로 묶으면 엉뚱한
+    가구가 제거되므로 scene_id를 같이 넣고, 수정 평면도는 scene_id를 먼저 본다.
+    """
+    rows = []
+    for index, obj in enumerate(graph.get("objects") or []):
+        item_type = str(obj.get("type") or "unknown").lower()
+        if (
+            obj.get("source") == "selected_product"
+            or item_type in scene_graph.WALL_MOUNTED_TYPES
+            or (
+                obj.get("category") not in model2_floorplan.SELECTABLE_CATEGORIES
+                and item_type not in model2_floorplan.SELECTABLE_TYPES
+            )
+        ):
+            continue
+        rows.append(
+            {
+                "id": f"furniture_{index}",
+                "label": translate_furniture_label(
+                    item_type,
+                    obj.get("label"),
+                    index + 1,
+                ),
+                "type": item_type,
+                "source_index": index,
+                "scene_id": str(obj.get("id")),
+            }
+        )
+    return rows
+
+
+def sync_furniture_choices(detected):
+    """가구 목록이 바뀐 뒤 기존 유지·제거·교체 선택을 scene id 기준으로 옮긴다."""
+    previous = {
+        str(choice.get("scene_id")): choice.get("decision")
+        for choice in session.get("furniture_choices") or []
+        if choice.get("scene_id")
+    }
+    session["furniture_choices"] = [
+        {
+            "id": item["id"],
+            "item": item["label"],
+            "type": item["type"],
+            "source_index": item["source_index"],
+            "scene_id": item["scene_id"],
+            "decision": previous.get(item["scene_id"], "keep"),
+        }
+        for item in detected
+    ]
+
+
+def choice_object_index(choice, objects):
+    """선택 항목이 가리키는 layout 객체의 순번. scene id가 있으면 그걸로 찾는다."""
+    scene_id = choice.get("scene_id")
+    if scene_id:
+        for index, obj in enumerate(objects):
+            if str(obj.get("id") or obj.get("scene_id")) == str(scene_id):
+                return index
+        return None
+    try:
+        return int(choice.get("source_index"))
+    except (TypeError, ValueError):
+        return None
+
+
 def resolve_final_layout_path():
     """3D로 보여줄 layout 파일 경로. 사용자의 최종 선택이 반영된 것을 우선한다.
 

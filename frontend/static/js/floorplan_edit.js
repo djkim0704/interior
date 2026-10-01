@@ -78,6 +78,11 @@
           new CustomEvent("floorplan:scene-updated", { detail: result.scene_3d })
         );
       }
+      if (result.uncertain) {
+        window.dispatchEvent(
+          new CustomEvent("floorplan:uncertain-updated", { detail: result.uncertain })
+        );
+      }
       setEditMode(false);
       const moved = (result.adjustments || []).filter((item) => item.reason === "collision").length;
       if (status) {

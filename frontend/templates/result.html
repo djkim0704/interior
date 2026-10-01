@@ -207,6 +207,7 @@
               gap-3
             "
             data-source-index="{{ choice.source_index }}"
+            data-scene-id="{{ choice.scene_id or '' }}"
           >
             <span>
               {{ choice.item }}
@@ -219,6 +220,13 @@
               <button type="button"
                 class="btn {{ 'btn-danger' if choice.decision == 'remove' else 'btn-outline-danger' }}"
                 data-decision="remove">제거</button>
+              {% if choice.type in replaceable_types %}
+              {# 교체: 같은 종류 상품을 추가하면 이 가구 자리·방향 그대로 놓인다 (항목 13·14) #}
+              <button type="button"
+                class="btn {{ 'btn-primary' if choice.decision == 'replace' else 'btn-outline-primary' }}"
+                data-decision="replace"
+                title="같은 종류 상품을 추가하면 이 자리에 놓여요">교체</button>
+              {% endif %}
             </div>
           </div>
         </div>
@@ -480,7 +488,8 @@
 <script
   src="{{ url_for(
     'static',
-    filename='js/result_toggle.js'
+    filename='js/result_toggle.js',
+    v='20261002-replace'
   ) }}"
 ></script>
 

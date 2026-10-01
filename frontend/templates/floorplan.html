@@ -34,6 +34,22 @@
     cursor: grabbing;
   }
 
+  .review-card {
+    border: 1px solid #ecd9c3;
+    border-radius: 14px;
+    background: #fffaf3;
+  }
+  .review-card .review-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 0;
+    border-bottom: 1px dashed #ecd9c3;
+  }
+  .review-card .review-row:last-child { border-bottom: none; }
+  .review-card .review-confidence { color: #c46f1c; font-size: 0.8rem; }
+  .review-door { border-top: 1px solid #ecd9c3; }
   #floorplan3dControls .btn.active {
     background: #212529;
     color: #fff;
@@ -73,12 +89,19 @@
         <button type="button" class="btn btn-outline-secondary" data-view-preset="eye">
           눈높이
         </button>
+        <button type="button" class="btn btn-outline-dark d-none" id="floorplan3dEdit">가구 옮기기</button>
+        <button type="button" class="btn btn-outline-dark d-none" id="floorplan3dRotate" disabled title="고른 가구를 90° 돌립니다 (R 키)">↻ 회전</button>
         <button type="button" class="btn btn-outline-secondary active" id="floorplan3dLabels">
           이름 숨기기
         </button>
       </div>
 
-      <div id="floorplan3dBox" class="d-none border mb-3"></div>
+      <div
+        id="floorplan3dBox"
+        class="d-none border mb-3"
+        data-edit-url="{{ url_for('edit_scene') }}"
+        data-edit-context="floorplan"
+      ></div>
 
       <p
         id="floorplan3dStatus"
@@ -142,6 +165,45 @@
         aria-live="polite"
       ></p>
 
+      {% if review %}
+      {# AI가 확신하지 못한 가구를 사용자가 확인·보정한다 (항목 17·18·19). 문 위치도 여기서 받는다 #}
+      <div
+        id="floorplanReview"
+        class="review-card p-3 mt-3"
+        data-edit-url="{{ url_for('edit_scene') }}"
+        data-reanalyze-url="{{ url_for('reanalyze_scene') }}"
+      >
+        <div class="d-flex justify-content-between align-items-center mb-1">
+          <p class="mb-0 fw-semibold">AI가 확실하지 않은 부분</p>
+          <button id="reviewReanalyze" type="button" class="btn btn-sm btn-outline-dark rounded-pill px-3">
+            AI로 다시 확인
+          </button>
+        </div>
+        <p class="small text-muted mb-2">
+          평면도에 주황 점선과 "?"로 표시된 가구예요. 맞는지 확인하거나 바로잡아 주세요.
+          고친 내용은 공간 분석 결과에 그대로 반영되고, 2D와 3D에 함께 적용됩니다.
+        </p>
+        <ul id="reviewList" class="list-unstyled mb-2"></ul>
+
+        <div id="reviewDoor" class="review-door pt-2">
+          <p class="small mb-2" id="reviewDoorHint"></p>
+          <div class="d-flex flex-wrap gap-2 align-items-center">
+            <select id="reviewDoorWall" class="form-select form-select-sm" style="width:auto">
+              <option value="top">위쪽 벽</option>
+              <option value="bottom">아래쪽 벽</option>
+              <option value="left">왼쪽 벽</option>
+              <option value="right">오른쪽 벽</option>
+            </select>
+            <label class="small text-muted" for="reviewDoorOffset">벽의 어느 쪽</label>
+            <input id="reviewDoorOffset" type="range" min="0" max="100" value="50" class="form-range" style="width:140px">
+            <button id="reviewDoorAdd" type="button" class="btn btn-sm btn-outline-dark rounded-pill px-3">문 추가</button>
+          </div>
+        </div>
+        <p id="reviewStatus" class="small text-muted mt-2 mb-0" aria-live="polite"></p>
+      </div>
+      <script type="application/json" id="floorplanReviewData">{{ review | tojson }}</script>
+      {% endif %}
+
       <div class="ai-description p-3 mt-3">
         평면도는 AI가 사진을 바탕으로 추정한 결과이므로 실제 구조와 차이가 있을 수 있어요.
       </div>
@@ -153,11 +215,14 @@
 
 {% block extra_js %}
 <script
-  src="{{ url_for('static', filename='js/floorplan_drag.js', v='20261001-solver') }}"
+  src="{{ url_for('static', filename='js/floorplan_drag.js', v='20261002-3d-edit') }}"
 ></script>
 <script
-  src="{{ url_for('static', filename='js/floorplan_edit.js', v='20261001-solver') }}"
+  src="{{ url_for('static', filename='js/floorplan_edit.js', v='20261002-3d-edit') }}"
   data-save-url="{{ url_for('save_floorplan_edit') }}"
+></script>
+<script
+  src="{{ url_for('static', filename='js/floorplan_review.js', v='20261002-review') }}"
 ></script>
 
 {% if scene_3d %}
@@ -177,7 +242,7 @@
   </script>
   <script
     type="module"
-    src="{{ url_for('static', filename='js/floorplan_3d.js', v='20261001-solver') }}"
+    src="{{ url_for('static', filename='js/floorplan_3d.js', v='20261002-3d-edit') }}"
   ></script>
 {% endif %}
 {% endblock %}

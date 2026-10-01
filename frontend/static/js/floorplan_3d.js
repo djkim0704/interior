@@ -656,6 +656,7 @@ class Floorplan3D {
       const label = makeLabel(labelText, { accent: Boolean(obj.is_product) });
       label.position.set(x, obj.base_m + obj.height_m + 0.2, z);
       label.userData.object = obj;
+      wrapper.userData.label = label;
       this.labelGroup.add(label);
     });
 
@@ -687,19 +688,120 @@ class Floorplan3D {
     return this.labelsVisible;
   }
 
+  // 편집 모드: 가구를 바닥 위로 끌어 옮기고, 고른 가구를 90°씩 돌린다.
+  // 화면에서는 바로 움직이고, 손을 떼면 onEdit로 서버에 알린다. 서버가 겹친 가구를
+  // 비켜 준 결과로 다시 그리므로 여기서는 충돌을 따지지 않는다.
+  setEditable(on) {
+    this.editable = Boolean(on);
+    if (!this.editable) this._select(null);
+    this.renderer.domElement.style.cursor = this.editable ? "grab" : "";
+  }
+
+  _select(wrapper) {
+    if (this.selected && this.selected !== this.hovered) this._setHighlight(this.selected, false);
+    this.selected = wrapper;
+    if (wrapper) this._setHighlight(wrapper, true);
+    if (typeof this.onSelect === "function") {
+      this.onSelect(wrapper ? wrapper.userData.object : null);
+    }
+  }
+
+  rotateSelected(step = 90) {
+    if (!this.selected || typeof this.onEdit !== "function") return;
+    const obj = this.selected.userData.object;
+    this.onEdit({ op: "rotate", id: obj.id, rotation_deg: (obj.rotation_deg + step + 360) % 360 });
+  }
+
+  _floorPoint() {
+    const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+    const point = new THREE.Vector3();
+    this.raycaster.setFromCamera(this.pointer, this.camera);
+    return this.raycaster.ray.intersectPlane(plane, point) ? point : null;
+  }
+
   _bindEvents() {
     this.raycaster = new THREE.Raycaster();
     this.pointer = new THREE.Vector2();
     this.hovered = null;
+    this.editable = false;
+    this.selected = null;
+    this.dragging = null;
 
-    this._onPointerMove = (event) => {
+    const updatePointer = (event) => {
       const rect = this.renderer.domElement.getBoundingClientRect();
-      if (!rect.width || !rect.height) return;
+      if (!rect.width || !rect.height) return false;
       this.pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
       this.pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+      return true;
+    };
+
+    this._onPointerMove = (event) => {
+      if (!updatePointer(event)) return;
+      if (this.dragging) {
+        const point = this._floorPoint();
+        if (!point) return;
+        const { wrapper, offset, label } = this.dragging;
+        wrapper.position.x = point.x - offset.x;
+        wrapper.position.z = point.z - offset.z;
+        if (label) {
+          label.position.x = wrapper.position.x;
+          label.position.z = wrapper.position.z;
+        }
+        this.dragging.moved = true;
+        return;
+      }
       this._pick();
     };
     this.renderer.domElement.addEventListener("pointermove", this._onPointerMove);
+
+    this._onPointerDown = (event) => {
+      if (!this.editable || !updatePointer(event)) return;
+      this._pick();
+      if (!this.hovered) {
+        this._select(null);
+        return;
+      }
+      const point = this._floorPoint();
+      if (!point) return;
+      const wrapper = this.hovered;
+      this.dragging = {
+        wrapper,
+        label: wrapper.userData.label,
+        offset: new THREE.Vector3(point.x - wrapper.position.x, 0, point.z - wrapper.position.z),
+        moved: false,
+      };
+      // 끄는 동안 카메라가 같이 돌지 않게 한다
+      this.controls.enabled = false;
+      this.renderer.domElement.setPointerCapture(event.pointerId);
+      this.renderer.domElement.style.cursor = "grabbing";
+    };
+    this.renderer.domElement.addEventListener("pointerdown", this._onPointerDown);
+
+    this._onPointerUp = (event) => {
+      if (!this.dragging) return;
+      const { wrapper, moved } = this.dragging;
+      this.dragging = null;
+      this.controls.enabled = true;
+      this.renderer.domElement.style.cursor = this.editable ? "grab" : "";
+      if (this.renderer.domElement.hasPointerCapture(event.pointerId)) {
+        this.renderer.domElement.releasePointerCapture(event.pointerId);
+      }
+      if (!moved) {
+        this._select(wrapper);
+        return;
+      }
+      const obj = wrapper.userData.object;
+      const { width_m: w, depth_m: d } = this.data.room;
+      // three.js 좌표는 방 중심 원점이다. Scene Graph의 좌상단 원점 미터로 되돌린다
+      const cx = Math.min(w, Math.max(0, wrapper.position.x + w / 2));
+      const cy = Math.min(d, Math.max(0, wrapper.position.z + d / 2));
+      this._select(wrapper);
+      if (typeof this.onEdit === "function") {
+        this.onEdit({ op: "move", id: obj.id, cx: Number(cx.toFixed(3)), cy: Number(cy.toFixed(3)) });
+      }
+    };
+    this.renderer.domElement.addEventListener("pointerup", this._onPointerUp);
+    this.renderer.domElement.addEventListener("pointercancel", this._onPointerUp);
 
     this._onResize = () => this.resize();
     window.addEventListener("resize", this._onResize);
@@ -767,6 +869,9 @@ class Floorplan3D {
     if (this.frame) cancelAnimationFrame(this.frame);
     window.removeEventListener("resize", this._onResize);
     this.renderer.domElement.removeEventListener("pointermove", this._onPointerMove);
+    this.renderer.domElement.removeEventListener("pointerdown", this._onPointerDown);
+    this.renderer.domElement.removeEventListener("pointerup", this._onPointerUp);
+    this.renderer.domElement.removeEventListener("pointercancel", this._onPointerUp);
     this.controls.dispose();
     this.scene.traverse((node) => {
       if (node.geometry) node.geometry.dispose();
@@ -855,6 +960,9 @@ function init() {
       try {
         viewer = new Floorplan3D(host, data);
         viewer.onHover = describe;
+        // 자동 브라우저 테스트가 뷰어에 접근할 수 있게 DOM 속성으로만 남긴다
+        host.__viewer = viewer;
+        window.dispatchEvent(new CustomEvent("floorplan:viewer-ready"));
       } catch (error) {
         console.error("[floorplan-3d] 초기화 실패:", error);
         host.classList.add("d-none");
@@ -909,12 +1017,112 @@ function init() {
     }
     data = next;
     const visible = !host.classList.contains("d-none");
+    let camera = null;
+    let selectedId = null;
     if (viewer) {
+      // 다시 세워도 보던 시점과 고른 가구를 유지한다
+      camera = { position: viewer.camera.position.clone(), target: viewer.controls.target.clone() };
+      selectedId = viewer.selected ? viewer.selected.userData.object.id : null;
       viewer.dispose();
       viewer = null;
     }
-    if (visible) show3d();
+    if (visible) {
+      show3d();
+      if (viewer && camera) {
+        viewer.camera.position.copy(camera.position);
+        viewer.controls.target.copy(camera.target);
+        viewer.controls.update();
+      }
+      if (viewer && selectedId) {
+        const wrapper = viewer.pickables.find((item) => item.userData.object.id === selectedId);
+        if (wrapper) viewer._select(wrapper);
+      }
+    }
   });
+
+  // ── 3D 편집 (항목 16) ─────────────────────────────────
+  const editUrl = host.dataset.editUrl;
+  const editContext = host.dataset.editContext || "floorplan";
+  const editButton = document.getElementById("floorplan3dEdit");
+  const rotateButton = document.getElementById("floorplan3dRotate");
+  let editing3d = false;
+  let busy = false;
+
+  async function sendEdit(op) {
+    if (!editUrl || busy) return;
+    busy = true;
+    if (status) status.textContent = "배치를 저장하고 있습니다…";
+    try {
+      const response = await fetch(editUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ops: [op], context: editContext }),
+      });
+      const result = await response.json();
+      if (!response.ok || !result.ok) throw new Error(result.error || "저장하지 못했습니다.");
+      // 같은 화면에 2D 평면도가 있으면 같은 배치로 바꾼다
+      const current = box2d ? box2d.querySelector("svg") : null;
+      const freshMarkup = editContext === "final" ? result.modified_svg || result.svg : result.svg;
+      if (current && freshMarkup) {
+        const holder = document.createElement("div");
+        holder.innerHTML = freshMarkup;
+        const fresh = holder.querySelector("svg");
+        if (fresh) {
+          current.replaceWith(fresh);
+          if (window.initFloorplanDrag) window.initFloorplanDrag();
+        }
+      }
+      window.dispatchEvent(new CustomEvent("floorplan:scene-updated", { detail: result.scene_3d }));
+      window.dispatchEvent(new CustomEvent("floorplan:uncertain-updated", { detail: result.uncertain || [] }));
+      const moved = (result.adjustments || []).filter((a) => String(a.reason || "").startsWith("collision")).length;
+      if (status) {
+        status.textContent = moved
+          ? `저장했습니다. 겹친 가구 ${moved}개를 옆으로 비켜 놓았어요.`
+          : "저장했습니다. 2D 평면도에도 같은 배치가 반영됐어요.";
+      }
+    } catch (error) {
+      if (status) status.textContent = error.message || "저장하지 못했습니다.";
+      // 실패하면 마지막으로 저장된 배치로 되돌린다
+      window.dispatchEvent(new CustomEvent("floorplan:scene-updated", { detail: data }));
+    } finally {
+      busy = false;
+    }
+  }
+
+  function attachEditing() {
+    if (!viewer) return;
+    viewer.onEdit = sendEdit;
+    viewer.onSelect = (obj) => {
+      if (rotateButton) rotateButton.disabled = !obj || !editing3d;
+      if (obj && status && editing3d) status.textContent = `${obj.label} 선택됨 — 끌어서 옮기거나 ↻(R 키)로 돌리세요.`;
+    };
+    viewer.setEditable(editing3d);
+  }
+
+  if (editButton && editUrl) {
+    editButton.classList.remove("d-none");
+    editButton.addEventListener("click", () => {
+      editing3d = !editing3d;
+      editButton.classList.toggle("active", editing3d);
+      editButton.textContent = editing3d ? "옮기기 끝" : "가구 옮기기";
+      if (rotateButton) rotateButton.classList.toggle("d-none", !editing3d);
+      attachEditing();
+      if (status) {
+        status.textContent = editing3d
+          ? "가구를 끌어 옮기세요. 고른 가구는 ↻ 버튼이나 R 키로 90°씩 돌립니다."
+          : "";
+      }
+    });
+  }
+  if (rotateButton) {
+    rotateButton.addEventListener("click", () => viewer && viewer.rotateSelected(90));
+  }
+  window.addEventListener("keydown", (event) => {
+    if (!editing3d || !viewer || (event.target.closest && event.target.closest("input, textarea, select"))) return;
+    if (event.key === "r" || event.key === "R") viewer.rotateSelected(event.shiftKey ? -90 : 90);
+  });
+  // 뷰어가 새로 만들어질 때마다 편집 연결을 다시 건다
+  window.addEventListener("floorplan:viewer-ready", attachEditing);
 
   // 전용 화면은 사용자가 누를 것도 없이 바로 3D를 보여준다
   if (autostart) show3d();

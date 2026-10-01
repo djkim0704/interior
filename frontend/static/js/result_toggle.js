@@ -24,7 +24,12 @@
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "same-origin",
-        body: JSON.stringify({ source_index: parseInt(si, 10), decision }),
+        // scene id가 있으면 같이 보낸다. 서버는 순번보다 scene id를 먼저 본다
+        body: JSON.stringify({
+          source_index: parseInt(si, 10),
+          scene_id: card.getAttribute("data-scene-id") || undefined,
+          decision,
+        }),
       });
       const data = await res.json();
       if (!data.ok) {
@@ -34,9 +39,12 @@
       // 버튼 상태 갱신
       const keepBtn = card.querySelector('[data-decision="keep"]');
       const removeBtn = card.querySelector('[data-decision="remove"]');
-      const removed = data.decision === "remove";
-      keepBtn.className = "btn " + (removed ? "btn-outline-secondary" : "btn-dark");
-      removeBtn.className = "btn " + (removed ? "btn-danger" : "btn-outline-danger");
+      const replaceBtn = card.querySelector('[data-decision="replace"]');
+      keepBtn.className = "btn " + (data.decision === "keep" ? "btn-dark" : "btn-outline-secondary");
+      removeBtn.className = "btn " + (data.decision === "remove" ? "btn-danger" : "btn-outline-danger");
+      if (replaceBtn) {
+        replaceBtn.className = "btn " + (data.decision === "replace" ? "btn-primary" : "btn-outline-primary");
+      }
       // 평면도 SVG 교체 + 드래그 재바인딩
       replacePlan(data.svg_markup);
     } catch (err) {

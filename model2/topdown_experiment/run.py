@@ -81,6 +81,7 @@ Schema:
       "color": "#c89a83",
       "material": "fabric",
       "pattern": "red beige check",
+      "photo_box": [0.12, 0.40, 0.58, 0.86],
       "confidence": 0.9
     }
   ],
@@ -95,6 +96,10 @@ Wall relationships are more important than approximate center coordinates.
 Describe reliable object relationships in relations. Allowed relation types are:
 left_of, right_of, above, below, near, aligned_x, aligned_y. A relation target
 must be another object id from this same JSON. Do not add uncertain relations.
+photo_box is where the object appears in the PHOTO itself (not the top-down
+plan): [left, top, right, bottom] as fractions 0..1 of the image width/height.
+confidence is how sure you are that the object exists with this category and
+approximate size; use lower values for partly hidden or ambiguous objects.
 Keep every numeric value within its stated range.
 """.strip()
 
@@ -262,6 +267,20 @@ def normalize_layout(layout: dict[str, Any]) -> dict[str, Any]:
                     }
                 )
         raw["relations"] = relations
+        # 사진 속 위치. 신뢰도가 낮은 가구만 잘라 다시 분석할 때 쓴다(항목 17)
+        box = raw.get("photo_box")
+        if isinstance(box, (list, tuple)) and len(box) == 4:
+            try:
+                x0, y0, x1, y1 = (max(0.0, min(1.0, float(v))) for v in box)
+            except (TypeError, ValueError):
+                x0 = y0 = x1 = y1 = 0.0
+            raw["photo_box"] = (
+                [round(min(x0, x1), 4), round(min(y0, y1), 4), round(max(x0, x1), 4), round(max(y0, y1), 4)]
+                if abs(x1 - x0) > 0.01 and abs(y1 - y0) > 0.01
+                else None
+            )
+        else:
+            raw["photo_box"] = None
 
         normalized_objects.append(raw)
     layout["objects"] = normalized_objects

@@ -219,6 +219,19 @@ frontend/templates/, static/      Jinja 템플릿과 정적 파일
   기본 모양으로 그린다. 캐시 키에 위치가 없어서 편집 후 재렌더에 호출이 없다.
   Gemini 3 계열은 `thinking_budget=0`을 400으로 거절하므로
   `gemini_svg_experiment.minimal_thinking(model)`을 쓴다.
+- **편집은 `POST /api/scene/edit` 하나로 한다**(`model2/scene_edit.py`). 2D 검토
+  패널, 3D "가구 옮기기", 결과 화면 3D가 모두 이 API에 연산(move·rotate·resize·
+  remove·confirm·retype·add)을 보내고, 서버가 Scene Graph를 고쳐 2D·3D를 같이
+  돌려준다. 사람이 고친 값은 `source="user"`, AI가 냈던 값은 `corrections`에 남는다.
+  2D 드래그 편집기(`/floorplan/save-edit`)는 그대로 쓰되 결과는 같은 파일로 간다.
+- 유지·제거·교체 선택은 **순번이 아니라 `scene_id`로** 가구를 찾는다. 검토 패널에서
+  가구를 지우거나 추가하면 순번이 밀리기 때문이다(`choice_object_index`).
+- 결과 화면 3D에서 옮긴 **상품** 위치는 `session["product_overrides"]`에 둔다. 수정
+  평면도는 선택이 바뀔 때마다 기준 배치에서 새로 만들어지기 때문이다.
+- `POST /api/scene/reanalyze`는 **확신이 낮은 가구만** 사진에서 잘라 Gemini에 다시
+  묻는다(`model2/gemini_reanalyze.py`). 분석 프롬프트가 `photo_box`(사진 속 위치)를
+  주기 때문에 가능하다. 결과는 `source="ai_refined"`로 표시되고 사람이 고친 가구는
+  건드리지 않는다. Gemini 호출이므로 버튼을 눌렀을 때만 돈다.
 - 배치 보정은 `model2/placement_solver.py` 하나가 맡는다(충돌·벽·문 앞·동선).
   분석 직후, 상품 추가(`ensure`, 새 객체만), 편집 저장(사용자가 옮긴 가구는
   고정, 동선 보정 없음) 때 돈다. 이동 사유는 `solver_adjustments`에 남는다.
