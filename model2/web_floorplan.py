@@ -20,6 +20,8 @@ from PIL import Image
 
 from .gemini_retry import call_with_retry
 from .gemini_telemetry import instrument
+from . import scene_graph
+from .scene_render_2d import render_svg as render_scene_graph_svg
 from .gemini_svg_experiment import _extract_svg, generate_svg_text
 from .product_icon_svg import generate_product_icon_svg
 from .topdown_experiment.run import analyze_room
@@ -1453,6 +1455,17 @@ def generate_floorplan_for_web(
             encoding="utf-8",
         )
 
+    if _floorplan_renderer() == "scene_graph":
+        return _finish_with_scene_graph(
+            scene,
+            layout_path=layout_path,
+            svg_path=svg_path,
+            base_svg_path=base_svg_path,
+            room_width=room_width,
+            room_depth=room_depth,
+            layout_model=layout_model,
+        )
+
     if room_width and room_depth:
         scene.setdefault("room", {})[
             "aspect_ratio_width_to_depth"
@@ -1526,6 +1539,80 @@ def generate_floorplan_for_web(
         # 어느 모델이 만든 결과인지 남긴다. 503/품질 문제를 추적할 때 필요하다.
         "layout_model": layout_model,
         "svg_model": svg_model,
+    }
+
+
+def _floorplan_renderer() -> str:
+    """2D 평면도를 누가 그릴지.
+
+    scene_graph(기본): Scene Graph를 그대로 그린다. 3D와 좌표가 같고 Gemini
+        호출이 평면도 1장당 1회(배치 분석)로 줄어든다.
+    gemini: 기존 방식. Gemini가 SVG를 새로 그린다. 개선 전후 비교 실험용으로 남긴다.
+    """
+    value = os.getenv("FLOORPLAN_2D_RENDERER", "scene_graph").strip().lower()
+    return value if value in {"scene_graph", "gemini"} else "scene_graph"
+
+
+# 평면도 화면에서 고를 수 있는 가구. 문·창·벽걸이·잡동사니는 뺀다.
+SELECTABLE_TYPES = SELECTABLE_CATEGORIES | {
+    "sofa",
+    "wardrobe",
+    "bench",
+    "desk_chair",
+    "vanity",
+    "tv",
+}
+
+
+def _finish_with_scene_graph(
+    scene: dict[str, Any],
+    *,
+    layout_path: Path,
+    svg_path: Path,
+    base_svg_path: Path,
+    room_width: float | None,
+    room_depth: float | None,
+    layout_model: str,
+) -> dict[str, Any]:
+    # 분석 결과는 캐시에서 다시 쓸 수 있지만, 그래프와 SVG는 매번 새로 만든다.
+    # 로컬 계산이라 비용이 거의 없고, 방 치수 입력이 바뀌어도 바로 반영된다.
+    graph = scene_graph.from_analysis(
+        scene,
+        width_m=room_width,
+        depth_m=room_depth,
+    )
+    layout_path.write_text(
+        json.dumps(graph, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    svg_markup = render_scene_graph_svg(graph)
+    svg_path.write_text(svg_markup, encoding="utf-8")
+    base_svg_path.write_text(svg_markup, encoding="utf-8")
+
+    furniture_objects = []
+    for index, obj in enumerate(graph["objects"]):
+        if (
+            obj.get("category") not in SELECTABLE_CATEGORIES
+            and obj.get("type") not in SELECTABLE_TYPES
+        ):
+            continue
+        furniture_objects.append(
+            {
+                "source_index": index,
+                "type": str(obj.get("type") or "unknown"),
+                "label": str(obj.get("label") or obj.get("type") or "가구"),
+            }
+        )
+    return {
+        "svg_path": str(svg_path),
+        "layout_file": str(layout_path),
+        "svg_markup": svg_markup,
+        "objects": furniture_objects,
+        "provider": "model2_gemini_svg",
+        "renderer": "scene_graph",
+        "layout_model": layout_model,
+        "svg_model": None,
+        "room": graph["room"],
     }
 
 
@@ -3373,12 +3460,35 @@ def prepare_floorplan_edit_markup(
                 "data-resizable": "true",
                 "data-original-furniture": "true",
                 "data-scene-id": scene_id,
+                # 라벨이 가구와 같이 움직이도록 floorplan_drag.js에 알려 준다.
+                # 라벨에 data-base-x/y가 있어야 하므로 없으면 연결하지 않는다.
+                **(
+                    {"data-label-id": f"label-{scene_id}"}
+                    if any(
+                        element.get("id") == f"label-{scene_id}"
+                        and element.get("data-base-x") is not None
+                        for element in root.iter()
+                    )
+                    else {}
+                ),
                 "data-tx": f"{center_x:.3f}",
                 "data-ty": f"{center_y:.3f}",
                 "data-origin-x": f"{center_x:.3f}",
                 "data-origin-y": f"{center_y:.3f}",
                 "data-angle": "0",
                 "data-scale": "1",
+                # 편집기가 보내는 배율·각도는 이 감싸개를 만든 시점 기준 누적값이다.
+                # 그 시점의 미터 값을 SVG에 같이 적어 둬야, 나중에 그래프가
+                # 다시 그려져도 저장할 때 기준이 어긋나지 않는다.
+                **(
+                    {
+                        "data-origin-w-m": f"{float(obj['w_m']):.4f}",
+                        "data-origin-d-m": f"{float(obj['d_m']):.4f}",
+                        "data-origin-rotation": f"{float(obj['rotation_deg']):.3f}",
+                    }
+                    if all(k in obj for k in ("w_m", "d_m", "rotation_deg"))
+                    else {}
+                ),
             },
         )
         original_transform = str(source_group.get("transform") or "").strip()
@@ -3488,6 +3598,12 @@ def apply_floorplan_edits_to_layout(
     """Persist edited centers and footprints for later product placement."""
     root = ET.fromstring(svg_markup)
     floor_x, floor_y, floor_width, floor_height = _floor_box(root)
+    if scene_graph.is_scene_graph(layout):
+        return _apply_edits_to_scene_graph(
+            root,
+            layout,
+            (floor_x, floor_y, floor_width, floor_height),
+        )
     edited = json.loads(json.dumps(layout))
     by_scene_id = {
         str(obj.get("scene_id") or ""): obj
@@ -3528,3 +3644,53 @@ def apply_floorplan_edits_to_layout(
         obj["user_rotation"] = angle
         obj["user_scale"] = scale
     return edited
+
+
+def _apply_edits_to_scene_graph(
+    root: ET.Element,
+    layout: dict[str, Any],
+    floor_box: tuple[float, float, float, float],
+) -> dict[str, Any]:
+    """편집기의 이동·배율·회전을 Scene Graph의 미터 값으로 옮긴다.
+
+    편집기가 보내는 배율·각도는 처음 그린 상태 기준 누적값이다. 기존 경로는
+    이미 편집된 크기에 다시 곱해서 저장할 때마다 배율이 겹쳤다. 여기서는
+    edit_origin(처음 상태)에 한 번만 적용한다.
+    """
+    graph = scene_graph.ensure(layout)
+    changed = []
+    for element in root.iter():
+        if element.get("data-original-furniture") != "true":
+            continue
+        try:
+            center = (
+                float(element.get("data-tx") or 0),
+                float(element.get("data-ty") or 0),
+            )
+            scale = min(1.8, max(0.5, float(element.get("data-scale") or 1)))
+            angle = float(element.get("data-angle") or 0) % 360
+        except (TypeError, ValueError):
+            continue
+        scene_id = str(element.get("data-scene-id") or "")
+        origin = None
+        try:
+            if element.get("data-origin-w-m") is not None:
+                origin = {
+                    "w_m": float(element.get("data-origin-w-m")),
+                    "d_m": float(element.get("data-origin-d-m")),
+                    "rotation_deg": float(element.get("data-origin-rotation")),
+                }
+        except (TypeError, ValueError):
+            origin = None
+        if scene_graph.apply_svg_edit(
+            graph,
+            scene_id,
+            center_px=center,
+            floor_box=floor_box,
+            scale=scale,
+            angle=angle,
+            origin=origin,
+        ):
+            changed.append(scene_id)
+    scene_graph.append_history(graph, "user", "svg_edit", objects=changed)
+    return scene_graph.sync_legacy(graph)

@@ -81,7 +81,8 @@ OAuth 액세스 토큰이라 몇 시간 뒤 만료되며 `401 UNAUTHENTICATED`�
 
 ```ini
 GEMINI_LAYOUT_MODEL=gemini-3.1-flash-lite   # 1단계 배치 분석 (무료 RPD 500)
-GEMINI_SVG_MODEL=gemini-3.5-flash-lite      # 2단계 평면도 SVG
+GEMINI_SVG_MODEL=gemini-3.5-flash-lite      # FLOORPLAN_2D_RENDERER=gemini 일 때만 사용
+FLOORPLAN_2D_RENDERER=scene_graph           # 2D 평면도 렌더러 (7.2)
 FLOORPLAN_CACHE=1                           # 평면도 캐시 (30분 TTL)
 ENABLE_GEMINI_SVG_RENDER=true               # /preview-3d 의 AI 입체 SVG
 GEMINI_ROOM_SVG_MODEL=gemini-3.5-flash-lite # 입체 SVG 우선 모델
@@ -196,10 +197,23 @@ frontend/templates/, static/      Jinja 템플릿과 정적 파일
 **테스트할 때 API를 불필요하게 호출하지 말 것.** 캐시(`FLOORPLAN_CACHE=1`,
 30분 TTL)를 켜 두고, 모델 비교가 필요할 때만 끈다.
 
-### 7.2 SVG의 ID 계약
+### 7.2 Scene Graph와 SVG의 ID 계약
 
-2단계가 만드는 평면도 SVG는 배치 JSON의 객체 id와 **정확히 같은** 그룹 id를
-가져야 한다.
+방 하나의 공간 정보는 **Scene Graph**(`model2/scene_graph.py`, `schema:
+"scene_graph_v1"`) 한 곳에만 있다. 2D 평면도(`model2/scene_render_2d.py`)와
+3D(`floorplan_3d.build_scene_from_graph`)는 둘 다 이걸 그대로 읽는다. 좌표를
+다시 계산하지 않으므로 2D와 3D의 위치·크기·회전이 같다.
+
+- 단위는 미터. `w_m`·`d_m`은 **가구 기준**(뒷면과 나란한 폭, 앞뒤 깊이)이고,
+  `rotation_deg`는 위에서 본 시계방향(0 = 뒷면이 위쪽 벽).
+- 기존 라우트가 읽는 정규화 필드(`x, y, w, h, wall, scene_id`)는 같은 파일에
+  함께 저장되지만 **미터 값에서 계산한 뷰**다. 미터 값을 고친 뒤에는
+  `scene_graph.sync_legacy()`(또는 `ensure()`)를 불러 다시 맞춘다.
+- legacy 필드만 채워 넣은 객체(상품 추가 등)는 `ensure()`가 미터 값을 복원한다.
+- 2D 렌더러를 Gemini로 되돌리려면 `FLOORPLAN_2D_RENDERER=gemini`. 개선 전후
+  비교 실험용으로만 남겨 둔 경로다.
+
+평면도 SVG는 Scene Graph의 객체 id와 **정확히 같은** 그룹 id를 가져야 한다.
 
 ```json
 { "id": "bed_1", "category": "bed", ... }
@@ -212,9 +226,9 @@ frontend/templates/, static/      Jinja 템플릿과 정적 파일
 `backend/app.py`의 수정·삭제 기능이 이 id로 가구를 찾는다. 어긋나면
 **평면도는 정상으로 보이는데 "수정하기"만 조용히 죽는다.** 에러가 안 난다.
 
-그래서 `GEMINI_SVG_MODEL`을 가벼운 모델로 바꿀 때는 반드시 실제로 편집이
-되는지 확인해야 한다. 1단계(`GEMINI_LAYOUT_MODEL`)는 `normalize_layout`이
-빠진 값을 메워주므로 가벼운 모델로 바꿔도 비교적 안전하다.
+기본 렌더러(`scene_graph`)는 이 계약을 코드로 보장한다. `gemini` 렌더러로
+바꿨을 때만 모델이 id를 빠뜨릴 수 있으니, 그때는 실제로 편집이 되는지
+확인해야 한다.
 
 ### 7.3 /preview-3d 의 "3D"는 두 가지다
 

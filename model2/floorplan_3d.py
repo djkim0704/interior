@@ -57,6 +57,7 @@ TYPE_PRESETS: dict[str, dict[str, Any]] = {
     "door":        {"height_m": 2.05, "base_m": 0.00, "color": "#e2d9c8", "wall_mounted": True},
     "window":      {"height_m": 1.30, "base_m": 0.85, "color": "#bcd6e0", "wall_mounted": True},
     "unknown":     {"height_m": 0.55, "base_m": 0.00, "color": "#9a9186", "wall_mounted": False},
+    "decor":       {"height_m": 0.40, "base_m": 0.00, "color": "#a89c8c", "wall_mounted": False},
     # 구매 가능 종류 (backend PURCHASE_LABELS 와 짝을 맞춘다)
     "sofa":        {"height_m": 0.85, "base_m": 0.00, "color": "#7d6b5d", "wall_mounted": False},
     "wardrobe":    {"height_m": 2.00, "base_m": 0.00, "color": "#8a6a44", "wall_mounted": False},
@@ -291,16 +292,98 @@ def _placed_objects(
     return objects, canvas
 
 
+def convert_graph_object(obj: dict[str, Any]) -> dict[str, Any]:
+    """Scene Graph 객체 → 3D 씬 객체. 위치·크기·회전·id를 그대로 옮긴다."""
+    obj_type = str(obj.get("type") or "unknown").lower()
+    preset = TYPE_PRESETS.get(obj_type, FALLBACK_PRESET)
+    color = str(obj.get("color") or "")
+    marker = obj.get("product_marker")
+    return {
+        "id": str(obj["id"]),
+        "type": obj_type,
+        "label": str(obj.get("label") or obj_type),
+        "cx": round(float(obj["cx"]), 4),
+        "cy": round(float(obj["cy"]), 4),
+        "w_m": round(float(obj["w_m"]), 4),
+        "d_m": round(float(obj["d_m"]), 4),
+        # 상품 치수(항목 6)가 들어오면 그 높이를 우선한다
+        "height_m": float(obj.get("h_m") or preset["height_m"]),
+        "base_m": float(obj.get("base_m") or preset["base_m"]),
+        "rotation_deg": round(float(obj.get("rotation_deg") or 0.0) % 360, 3),
+        "wall": str(obj.get("wall") or "none"),
+        "wall_mounted": preset["wall_mounted"],
+        # 2D와 같은 색을 쓴다. 분석 색이 없으면 타입 기본색
+        "color": color if len(color) == 7 and color.startswith("#") else preset["color"],
+        "confidence": obj.get("confidence"),
+        "source": obj.get("source"),
+        "is_product": str(obj.get("source") or "") == "selected_product",
+        "marker": marker if isinstance(marker, int) else None,
+        "product_title": (
+            str(obj["product_title"]) if obj.get("product_title") else None
+        ),
+    }
+
+
+def build_scene_from_graph(
+    layout: dict[str, Any],
+    plan: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Scene Graph → three.js 씬. 2D 렌더러와 같은 값을 그대로 쓴다.
+
+    재배치를 하지 않으므로 2D와 3D의 위치·크기·회전이 정의상 같다.
+    plan에 사용자 실측이 있고 그래프와 다르면 그래프 쪽을 그 치수로 맞춘다.
+    """
+    from . import scene_graph
+
+    graph = scene_graph.ensure(layout)
+    plan_in = plan or {}
+    width = _positive(plan_in.get("width_m"))
+    depth = _positive(plan_in.get("depth_m"))
+    room_in = graph["room"]
+    if width and depth and (
+        abs(width - float(room_in["width_m"])) > 1e-3
+        or abs(depth - float(room_in["depth_m"])) > 1e-3
+    ):
+        graph = scene_graph.rescale_room(graph, width, depth)
+        room_in = graph["room"]
+    room = {
+        "width_m": round(float(room_in["width_m"]), 3),
+        "depth_m": round(float(room_in["depth_m"]), 3),
+        "ceiling_m": round(
+            _positive(plan_in.get("ceiling_m"))
+            or _positive(room_in.get("ceiling_m"))
+            or DEFAULT_CEILING_M,
+            3,
+        ),
+        "estimated": bool(room_in.get("estimated")),
+        "scale_source": room_in.get("scale_source"),
+        "floor_color": str(room_in.get("floor_color") or DEFAULT_FLOOR_COLOR),
+        "wall_color": str(room_in.get("wall_color") or DEFAULT_WALL_COLOR),
+    }
+    return {
+        "room": room,
+        "objects": [convert_graph_object(obj) for obj in graph["objects"]],
+        "placement": "scene_graph",
+        "known_types": sorted(TYPE_PRESETS),
+    }
+
+
 def build_scene(
     layout: dict[str, Any] | None,
     plan: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """layout JSON + 방 치수 → three.js 가 바로 쓰는 씬 데이터.
 
+    Scene Graph(scene_graph_v1)면 재배치 없이 그대로 옮긴다. 아래는 그 이전
+    형식(rule_based_v3)을 위한 기존 경로다.
+
     좌표는 SVG 평면도와 같아야 한다. layout 의 x·y·w·h 를 그대로 쓰면
     표준 크기 대체·벽 맞춤·겹침 해소·격자 스냅이 빠져서 2D와 어긋나므로,
     rule_based_svg 의 배치 파이프라인을 그대로 통과시킨 결과를 쓴다.
     """
+    if isinstance(layout, dict) and layout.get("schema") == "scene_graph_v1":
+        return build_scene_from_graph(layout, plan)
+
     room = resolve_room(layout, plan)
 
     raw_objects = (layout or {}).get("objects")

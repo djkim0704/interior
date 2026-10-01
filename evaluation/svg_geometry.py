@@ -190,6 +190,9 @@ def _bbox(element: ET.Element, matrix: Matrix) -> Box | None:
     tag = element.tag.replace(SVG_NS, "")
     if tag in {"defs", "text", "title", "desc", "style", "clipPath", "mask", "pattern", "filter"}:
         return None
+    # 문 열림 궤적·저신뢰 점선처럼 가구 자체가 아닌 표시용 요소는 기하에서 뺀다
+    if element.get("data-annotation") == "true":
+        return None
     matrix = _multiply(matrix, parse_transform(element.get("transform")))
     boxes: list[Box] = []
     points = [_apply(matrix, px, py) for px, py in _element_points(element)]

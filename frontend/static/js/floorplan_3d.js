@@ -414,6 +414,16 @@ const BUILDERS = {
     return g;
   },
 
+  // 스피커·화병·바구니 같은 소품. 받침 위에 둥근 몸체를 얹어 상자와 구분한다.
+  decor(obj) {
+    const g = new THREE.Group();
+    const { w_m: w, d_m: d, height_m: h, color } = obj;
+    const r = Math.max(0.05, Math.min(w, d) / 2);
+    g.add(box(w, h * 0.12, d, material(color, 0.8)));
+    g.add(cylinder(r * 0.8, h * 0.88, material(color, 1.05), 0, h * 0.12, 0, 20));
+    return g;
+  },
+
   unknown(obj) {
     const { w_m: w, d_m: d, height_m: h, color } = obj;
     return box(w, h, d, material(color, 1));
@@ -816,8 +826,15 @@ function init() {
     if (!status) return;
     if (!obj) {
       const room = data.room;
+      // 치수를 무엇으로 정했는지 밝혀 둔다. 추정 근거를 알아야 사용자가 믿고 고칠 수 있다.
+      const basis = {
+        user_one_side: "입력한 한 변과 사진에서 읽은 방 비율로 계산",
+        reference_objects: "침대·문 같은 표준 크기 가구로 추정",
+        reference_objects_clamped: "표준 크기 가구로 추정(일반적인 방 크기 범위로 보정)",
+        default: "기준 가구가 없어 긴 변 4m로 가정",
+      }[room.scale_source];
       status.textContent = room.estimated
-        ? `방 치수 추정값 ${room.width_m}m × ${room.depth_m}m — 정확한 확인을 위해 실측값 입력을 권장합니다.`
+        ? `방 치수 ${room.width_m}m × ${room.depth_m}m — ${basis || "추정값"}. 정확한 확인을 위해 실측값 입력을 권장합니다.`
         : `방 ${room.width_m}m × ${room.depth_m}m · 천장 ${room.ceiling_m}m · 가구를 짚으면 크기가 표시됩니다.`;
       return;
     }

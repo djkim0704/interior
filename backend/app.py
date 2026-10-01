@@ -63,6 +63,7 @@ from model2 import (
     as model2_floorplan
 )
 from model2 import floorplan_3d
+from model2 import scene_graph
 from model2 import gemini_room_svg_render
 from model2 import gemini_furniture_parts
 from model2.gemini_retry import (
@@ -1386,52 +1387,22 @@ def upload():
             or ""
         ).strip()
 
-        dimension_values = [
-            room_width_raw,
-            room_depth_raw,
-            ceiling_height_raw,
-        ]
+        # 세 항목은 각각 선택이다. 가로·세로 중 한 변만 있어도
+        # Scene Graph가 사진에서 읽은 비율로 나머지 변을 계산한다.
+        parsed_dimensions = {}
 
-        all_dimensions_empty = all(
-            value == ""
-            for value
-            in dimension_values
-        )
-
-        all_dimensions_filled = all(
-            value != ""
-            for value
-            in dimension_values
-        )
-
-        room_width = None
-        room_depth = None
-        ceiling_height = None
-
-        if not all_dimensions_empty:
-            if not all_dimensions_filled:
-                return jsonify(
-                    {
-                        "ok": False,
-                        "error": (
-                            "방 크기는 세 항목을 "
-                            "모두 입력하거나 모두 "
-                            "비워 주세요."
-                        ),
-                    }
-                ), 400
+        for name, raw, low, high in (
+            ("room_width", room_width_raw, 0.5, 30.0),
+            ("room_depth", room_depth_raw, 0.5, 30.0),
+            ("ceiling_height", ceiling_height_raw, 1.8, 6.0),
+        ):
+            if raw == "":
+                parsed_dimensions[name] = None
+                continue
 
             try:
-                room_width = float(
-                    room_width_raw
-                )
-
-                room_depth = float(
-                    room_depth_raw
-                )
-
-                ceiling_height = float(
-                    ceiling_height_raw
+                value = float(
+                    raw
                 )
 
             except ValueError:
@@ -1445,20 +1416,28 @@ def upload():
                     }
                 ), 400
 
-            if not (
-                room_width >= 0.1
-                and room_depth >= 0.1
-                and ceiling_height >= 0.1
-            ):
+            if not low <= value <= high:
                 return jsonify(
                     {
                         "ok": False,
                         "error": (
-                            "방 크기는 0.1m "
-                            "이상으로 입력해 주세요."
+                            f"방 크기는 {low}~{high}m "
+                            "범위로 입력해 주세요."
                         ),
                     }
                 ), 400
+
+            parsed_dimensions[name] = value
+
+        room_width = parsed_dimensions[
+            "room_width"
+        ]
+        room_depth = parsed_dimensions[
+            "room_depth"
+        ]
+        ceiling_height = parsed_dimensions[
+            "ceiling_height"
+        ]
 
         file = request.files.get(
             "photo"
@@ -1520,34 +1499,20 @@ def upload():
             "original_filename"
         ] = file.filename
 
-        if room_width is not None:
-            session[
-                "room_width"
-            ] = room_width
-
-            session[
-                "room_depth"
-            ] = room_depth
-
-            session[
-                "ceiling_height"
-            ] = ceiling_height
-
-        else:
-            session.pop(
-                "room_width",
-                None,
-            )
-
-            session.pop(
-                "room_depth",
-                None,
-            )
-
-            session.pop(
-                "ceiling_height",
-                None,
-            )
+        for key, value in (
+            ("room_width", room_width),
+            ("room_depth", room_depth),
+            ("ceiling_height", ceiling_height),
+        ):
+            if value is None:
+                session.pop(
+                    key,
+                    None,
+                )
+            else:
+                session[
+                    key
+                ] = value
 
         for key in [
             "detected_furniture",
@@ -1688,14 +1653,19 @@ def current_room_plan():
         "ceiling_height"
     )
 
+    # 천장 높이는 없어도 된다(기본 2.4m). 가로·세로 중 한 변만 있는 경우는
+    # 여기서 면적을 낼 수 없으니 Scene Graph가 비율로 나머지를 채운다.
     dimensions_provided = (
         room_width is not None
         and room_depth is not None
-        and ceiling_height is not None
     )
 
     if not dimensions_provided:
-        return None, False
+        return (
+            {"ceiling_m": ceiling_height}
+            if ceiling_height is not None
+            else None
+        ), False
 
     area_sqm = (
         room_width
@@ -1743,13 +1713,18 @@ def floorplan():
         "ceiling_height"
     )
 
+    # 천장 높이는 없어도 된다(기본 2.4m). 가로·세로 중 한 변만 있는 경우는
+    # 여기서 면적을 낼 수 없으니 Scene Graph가 비율로 나머지를 채운다.
     dimensions_provided = (
         room_width is not None
         and room_depth is not None
-        and ceiling_height is not None
     )
 
-    plan = None
+    plan = (
+        {"ceiling_m": ceiling_height}
+        if ceiling_height is not None
+        else None
+    )
 
     if dimensions_provided:
         area_sqm = (
@@ -3193,6 +3168,26 @@ def create_modified_floorplan(
                 modified_objects
             ),
         }
+
+        # Scene Graph면 새로 끼운 상품에도 미터 좌표·id를 채운다.
+        # 크기가 0으로 들어온 상품은 타입별 표준 크기를 쓴다.
+        if scene_graph.is_scene_graph(
+            modified_layout
+        ):
+            modified_layout = scene_graph.ensure(
+                modified_layout
+            )
+            scene_graph.append_history(
+                modified_layout,
+                "user",
+                "modify_furniture",
+                removed=sorted(
+                    remove_indices
+                ),
+                products=len(
+                    selected_products
+                ),
+            )
 
         token = (
             uuid.uuid4()

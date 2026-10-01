@@ -116,6 +116,16 @@
       const formData = new FormData();
 
       formData.append("photo", selectedFile);
+      // 방 크기는 선택 입력이다. 비어 있으면 보내지 않고 서버가 추정한다.
+      [
+        ["room_width", "roomWidth"],
+        ["room_depth", "roomDepth"],
+        ["ceiling_height", "ceilingHeight"],
+      ].forEach(([name, id]) => {
+        const input = document.getElementById(id);
+        const value = input ? input.value.trim() : "";
+        if (value) formData.append(name, value);
+      });
 
       const response = await fetch(uploadUrl, {
         method: "POST",

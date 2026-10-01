@@ -42,6 +42,14 @@ WALL_MIN_OUTSIDE_M2 = 0.005
 DEFAULT_CLEARANCE_M = 0.30
 GRID_M = 0.05
 
+# floorplan_3d.js의 BUILDERS에 전용 형태가 있는 타입. 이 밖의 타입은 상자로 그려진다.
+BUILDER_TYPES = {
+    "bed", "desk", "table", "low_table", "shelf", "cabinet", "chair", "floor_chair",
+    "stool", "rug", "lamp", "plant", "mirror", "door", "window", "sofa", "wardrobe",
+    "dresser", "bench", "tv", "fridge", "aircon", "washer", "vanity", "nightstand",
+    "desk_chair", "curtain", "decor",
+}
+
 
 # ---------------------------------------------------------------- 기하 기본
 
@@ -366,7 +374,7 @@ def sync_metrics(
         )
     missing_2d = [i for i in expected if i not in boxes_2d_m]
     missing_3d = [i for i in expected if i not in by_id]
-    unknown_3d = [str(o.get("id")) for o in objects_3d if str(o.get("type")) == "unknown"]
+    unknown_3d = [str(o.get("id")) for o in objects_3d if str(o.get("type")) not in BUILDER_TYPES]
     errors = [r["center_error_m"] for r in rows]
     return {
         "matched": len(rows),

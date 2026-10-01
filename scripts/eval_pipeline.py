@@ -177,16 +177,38 @@ def cached_runs(directory: Path) -> list[str]:
     return stems
 
 
-def run_cached(directory: Path, clearance: float) -> list[dict[str, Any]]:
+def run_cached(directory: Path, clearance: float, rebuild: bool = False) -> list[dict[str, Any]]:
+    """캐시된 결과물을 측정한다.
+
+    rebuild=True면 같은 분석 JSON에서 현재 코드로 layout과 SVG를 다시 만든다.
+    Gemini 분석 결과가 같으므로 기존 방식과 개선 방식의 차이만 비교된다.
+    """
     rows = []
+    rebuild_dir = ROOT / "output" / "eval" / "rebuild"
     for stem in cached_runs(directory):
         entry: dict[str, Any] = {"name": stem}
         try:
             scene = json.loads((directory / f"{stem}_model2_scene.json").read_text(encoding="utf-8"))
             layout = json.loads((directory / f"{stem}_model2_layout.json").read_text(encoding="utf-8"))
-            entry.update(
-                evaluate_outputs(scene, layout, directory / f"{stem}_model2_floorplan.svg", clearance=clearance)
-            )
+            svg_path = directory / f"{stem}_model2_floorplan.svg"
+            if rebuild:
+                from model2 import scene_graph
+                from model2.scene_render_2d import render_svg
+
+                old_room = layout.get("room") or {}
+                layout = scene_graph.from_analysis(
+                    scene,
+                    width_m=old_room.get("width_m"),
+                    depth_m=old_room.get("depth_m"),
+                )
+                rebuild_dir.mkdir(parents=True, exist_ok=True)
+                svg_path = rebuild_dir / f"{stem}.svg"
+                svg_path.write_text(render_svg(layout), encoding="utf-8")
+                (rebuild_dir / f"{stem}.json").write_text(
+                    json.dumps(layout, ensure_ascii=False, indent=2), encoding="utf-8"
+                )
+                entry["scale_source"] = layout["room"].get("scale_source")
+            entry.update(evaluate_outputs(scene, layout, svg_path, clearance=clearance))
         except Exception as exc:  # 한 건이 깨져도 나머지는 측정한다
             entry["error"] = f"{type(exc).__name__}: {exc}"
         rows.append(entry)
@@ -387,6 +409,7 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     cached = sub.add_parser("cached", help="이미 생성된 결과물을 측정 (API 0회)")
     cached.add_argument("--dir", type=Path, default=GENERATED)
+    cached.add_argument("--rebuild", action="store_true", help="같은 분석 JSON으로 현재 코드의 layout·SVG를 다시 만들어 측정")
     live = sub.add_parser("run", help="사진 폴더를 파이프라인에 통과시켜 측정")
     live.add_argument("rooms", type=Path)
     group = live.add_mutually_exclusive_group()
@@ -400,8 +423,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.command == "cached":
-        rows = run_cached(args.dir, args.clearance)
-        mode = "cached"
+        rows = run_cached(args.dir, args.clearance, rebuild=args.rebuild)
+        mode = "cached_rebuild" if args.rebuild else "cached"
     else:
         mode = "replay" if args.replay else "record" if args.record else "off"
         tag = args.tag or f"eval-{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:4]}"
