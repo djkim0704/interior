@@ -301,8 +301,9 @@ def analyze_room(
             temperature=0.1,
             # thinking 계열 모델은 추론 토큰도 이 한도에서 깎아간다.
             # 4096이면 객체가 많은 방에서 JSON이 잘려 json.loads가 깨진다.
-            max_output_tokens=8192,
-
+            # pro 계열은 thinking을 끌 수 없어 추론만으로 수천 토큰을 쓴다. 한도는
+            # 상한일 뿐 쓴 만큼만 과금되므로 넉넉히 둔다.
+            max_output_tokens=int(os.getenv("GEMINI_LAYOUT_MAX_OUTPUT_TOKENS", "32768")),
         ),
     )
     if not response.text:

@@ -187,12 +187,16 @@ def _ensure_not_truncated(response: object) -> None:
         )
 
 
-def minimal_thinking(model: str) -> types.ThinkingConfig:
+def minimal_thinking(model: str) -> types.ThinkingConfig | None:
     """thinking을 최소로 줄이는 설정. 모델 세대마다 받는 옵션이 다르다.
 
     Gemini 3 계열은 thinking_budget=0을 400 INVALID_ARGUMENT로 거절하고
     thinking_level만 받는다. 2.5 이하는 thinking_budget=0으로 끈다.
+    pro 계열은 thinking을 끄거나 최소로 줄이는 값을 거절할 수 있어 아무것도 보내지
+    않는다(None이면 모델 기본값). 대신 호출부의 출력 한도를 넉넉히 둬야 한다.
     """
+    if "pro" in str(model).lower():
+        return None
     if str(model).lower().startswith("gemini-3"):
         return types.ThinkingConfig(thinking_level=types.ThinkingLevel.MINIMAL)
     return types.ThinkingConfig(thinking_budget=0)

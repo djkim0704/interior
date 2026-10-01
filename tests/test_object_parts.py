@@ -127,6 +127,11 @@ class ShapeTests(unittest.TestCase):
         self.assertIsNotNone(gfp.thinking_for("gemini-3.6-flash", "high").thinking_level)
         self.assertEqual(gfp.thinking_for("gemini-2.5-flash", "medium").thinking_budget, 4096)
         self.assertEqual(gfp.thinking_for("gemini-2.5-flash", "off").thinking_budget, 0)
+        # pro 계열은 thinking을 끄는 값을 거절할 수 있어 아무것도 보내지 않는다
+        from model2.gemini_svg_experiment import minimal_thinking
+
+        self.assertIsNone(minimal_thinking("gemini-3.6-pro"))
+        self.assertIsNotNone(minimal_thinking("gemini-3.6-flash").thinking_level)
 
     def test_max_parts_from_env(self) -> None:
         with mock.patch.dict(os.environ, {"OBJECT_PARTS_MAX": "12"}):

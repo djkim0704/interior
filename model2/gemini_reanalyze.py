@@ -175,7 +175,8 @@ def reanalyze(
         config=types.GenerateContentConfig(
             response_mime_type="application/json",
             temperature=0.1,
-            max_output_tokens=4096,
+            # pro 계열이면 thinking 토큰도 이 한도를 쓴다
+            max_output_tokens=16384,
             thinking_config=minimal_thinking(model),
         ),
     )
