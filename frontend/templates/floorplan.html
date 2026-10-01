@@ -100,6 +100,7 @@
         id="floorplan3dBox"
         class="d-none border mb-3"
         data-edit-url="{{ url_for('edit_scene') }}"
+        data-parts-url="{{ url_for('scene_object_parts') }}"
         data-edit-context="floorplan"
       ></div>
 
@@ -215,10 +216,10 @@
 
 {% block extra_js %}
 <script
-  src="{{ url_for('static', filename='js/floorplan_drag.js', v='20261002-3d-edit') }}"
+  src="{{ url_for('static', filename='js/floorplan_drag.js', v='20261002-object-parts') }}"
 ></script>
 <script
-  src="{{ url_for('static', filename='js/floorplan_edit.js', v='20261002-3d-edit') }}"
+  src="{{ url_for('static', filename='js/floorplan_edit.js', v='20261002-object-parts') }}"
   data-save-url="{{ url_for('save_floorplan_edit') }}"
 ></script>
 <script
@@ -242,7 +243,7 @@
   </script>
   <script
     type="module"
-    src="{{ url_for('static', filename='js/floorplan_3d.js', v='20261002-3d-edit') }}"
+    src="{{ url_for('static', filename='js/floorplan_3d.js', v='20261002-object-parts') }}"
   ></script>
 {% endif %}
 {% endblock %}

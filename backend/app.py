@@ -2384,6 +2384,41 @@ def floorplan_review_data(graph):
     }
 
 
+def object_parts_enabled():
+    return os.getenv("GEMINI_OBJECT_PARTS", "1").strip().lower() not in {"0", "false", "no", "off"}
+
+
+@app.post("/api/scene/parts")
+def scene_object_parts():
+    """가구별 3D 형태(부품 목록)를 돌려준다. three.js는 배치만 하고 모양은 이걸로 그린다.
+
+    캐시에 없는 가구만 Gemini에 한 번에 묻는다. 위치·회전은 캐시 키에 없어서 편집 뒤에
+    다시 불러도 호출이 늘지 않고, 새로 들어온 상품만 묻는다.
+    """
+    if "uploaded_file" not in session or not object_parts_enabled():
+        return jsonify({"ok": True, "object_parts": {}})
+    payload = request.get_json(silent=True) or {}
+    context = "final" if payload.get("context") == "final" else "floorplan"
+    if context == "final":
+        layout_path, _ = resolve_final_layout_path()
+    else:
+        layout_path = resolve_session_generated_file("floorplan_layout_file")
+    if not layout_path or not os.path.isfile(layout_path):
+        return jsonify({"ok": True, "object_parts": {}})
+    layout = json.loads(Path(layout_path).read_text(encoding="utf-8"))
+    plan, _ = current_room_plan()
+    with floorplan_generation_lock:
+        scene = floorplan_3d.build_scene(layout, plan)
+    photo = Path(UPLOAD_DIR) / os.path.basename(str(session.get("uploaded_file")))
+    parts = gemini_furniture_parts.generate_object_parts(
+        scene,
+        GENERATED_DIR,
+        room_photo=photo,
+        style_prompt=_preview_style_prompt(),
+    )
+    return jsonify({"ok": True, "object_parts": parts})
+
+
 @app.post("/api/scene/reanalyze")
 def reanalyze_scene():
     """확신이 낮은 가구만 Gemini로 다시 분석한다 (항목 17). 방 전체를 다시 묻지 않는다."""
@@ -3446,6 +3481,12 @@ def create_modified_floorplan(
                     "product_marker": (
                         marker
                     ),
+                    # 상품 실측 치수·형태 속성(항목 6·7·14). Scene Graph와 3D가 이 값으로
+                    # 상품 크기와 모양을 정한다
+                    **product_geometry(
+                        product,
+                        replacement_object,
+                    ),
                     # Scene Graph면 교체 대상의 위치·크기·방향·벽을 그대로 물려받는다.
                     # legacy 값만 넘기면 벽 방향을 고정 맵(wall_map)에서 다시 정해서
                     # 교체한 가구가 엉뚱한 쪽을 보던 문제가 있었다.
@@ -3455,10 +3496,13 @@ def create_modified_floorplan(
                             for key in (
                                 "cx",
                                 "cy",
-                                "w_m",
-                                "d_m",
                                 "rotation_deg",
                                 "wall",
+                            )
+                            + (
+                                ()
+                                if product_has_real_size(product)
+                                else ("w_m", "d_m")
                             )
                             if key in replacement_object
                         }
@@ -3485,6 +3529,19 @@ def create_modified_floorplan(
         ):
             modified_layout = scene_graph.ensure(
                 modified_layout
+            )
+            # 교체 상품이 실측 크기로 커지면 원래 자리에서 옆 가구와 겹칠 수 있다.
+            # 상품만 움직여 자리를 맞추고, 기존 가구는 그대로 둔다.
+            from model2.placement_solver import solve as solve_placement
+
+            solve_placement(
+                modified_layout,
+                movable_ids=[
+                    str(obj.get("id"))
+                    for obj in modified_layout["objects"]
+                    if obj.get("source") == "selected_product"
+                ],
+                walkway=False,
             )
             # 결과 화면의 3D에서 사용자가 옮긴 상품 위치를 다시 적용한다.
             # 수정 평면도는 선택이 바뀔 때마다 새로 만들어지므로 따로 들고 있어야 한다.
@@ -4225,9 +4282,25 @@ def add_product():
                 item_type,
                 item_type,
             ),
+            "snippet": data.get(
+                "snippet"
+            ),
             "marker": marker,
         }
     )
+
+    # 새로 고른 상품만 분석한다: 평면도 아이콘, 3D 형태 속성, 실제 치수.
+    # 이미지 URL 기준으로 캐시되므로 같은 상품을 다시 고르면 호출이 없다.
+    try:
+        model2_floorplan.enrich_products_with_visual_profiles(
+            selected_products[-1:],
+            PRODUCT_CACHE_DIR,
+        )
+    except Exception as enrich_exc:
+        print(
+            "[add-product] "
+            f"상품 분석 실패, 기본 형태로 진행: {enrich_exc}"
+        )
 
     selected_filename = (
         save_json_cache(
@@ -4391,6 +4464,39 @@ def result():
 # ──────────────────────────────────────────────────────
 # STEP 6: 3D 배치 확인
 # ──────────────────────────────────────────────────────
+def product_has_real_size(product):
+    """상품 크기를 믿을 만한가. 실측이거나 규격(퀸, 3인용)으로 정한 경우."""
+    dims = product.get("dimensions") or {}
+    return bool(
+        dims.get("measured")
+        or dims.get("dimension_source") == "size_class"
+    )
+
+
+def product_geometry(product, replacement_object=None):
+    """수정 평면도에 넣을 상품의 미터 크기·높이·형태 속성.
+
+    교체일 때 상품 크기를 모르면(타입 기본값뿐이면) 원래 가구 크기를 유지한다.
+    방에 맞게 놓여 있던 크기가 표준값보다 실제에 가깝기 때문이다.
+    """
+    dims = product.get("dimensions") or {}
+    geometry = {
+        "attrs": product.get("attributes3d") or {},
+        "dimension_source": dims.get("dimension_source"),
+        # 가구별 3D 형태를 만들 때 Gemini에게 보여 줄 상품 사진
+        "image_file": product.get("image_file"),
+    }
+    if dims.get("h_m"):
+        geometry["h_m"] = dims["h_m"]
+    if dims.get("w_m") and dims.get("d_m") and (
+        product_has_real_size(product)
+        or not replacement_object
+    ):
+        geometry["w_m"] = dims["w_m"]
+        geometry["d_m"] = dims["d_m"]
+    return geometry
+
+
 def detected_furniture_from_graph(graph):
     """Scene Graph → 평면도 화면의 가구 목록. 선택은 순번이 아니라 scene id로 묶는다.
 
@@ -4853,21 +4959,8 @@ def preview_3d():
                     "3D로 보여줄 것이 없습니다."
                 )
 
-            else:
-                # 가구 형태 설계도. 실패해도 빈 dict 라 three.js 가 기존
-                # 빌더로 그대로 그린다. 그래서 여기서 예외를 잡지 않는다.
-                scene_3d[
-                    "furniture_parts"
-                ] = (
-                    gemini_furniture_parts
-                    .generate_furniture_parts(
-                        scene_3d,
-                        GENERATED_DIR,
-                        style_prompt=(
-                            _preview_style_prompt()
-                        ),
-                    )
-                )
+            # 가구 형태는 페이지를 연 뒤 /api/scene/parts로 따로 받는다(가구별 Gemini 생성).
+            # 여기서 기다리면 3D 화면이 Gemini 응답만큼 늦게 뜬다.
 
             if scene_3d and os.getenv(
                 "ENABLE_GEMINI_SVG_RENDER",

@@ -232,6 +232,10 @@ frontend/templates/, static/      Jinja 템플릿과 정적 파일
   묻는다(`model2/gemini_reanalyze.py`). 분석 프롬프트가 `photo_box`(사진 속 위치)를
   주기 때문에 가능하다. 결과는 `source="ai_refined"`로 표시되고 사람이 고친 가구는
   건드리지 않는다. Gemini 호출이므로 버튼을 눌렀을 때만 돈다.
+- 상품 실측 치수는 `model2/product_dimensions.py`가 정한다(제목 → 설명 → 상품 페이지 →
+  사진 속 치수표 → 규격(퀸·3인용) → 타입 기본값). 출처는 `dimension_source`, 실측
+  여부는 `measured`로 남는다. 형태 속성은 `model2/product_attributes.py`(사진 → Gemini).
+  `/add-product`가 새 상품만 분석한다(아이콘·속성·치수, 이미지 URL 단위 캐시).
 - 배치 보정은 `model2/placement_solver.py` 하나가 맡는다(충돌·벽·문 앞·동선).
   분석 직후, 상품 추가(`ensure`, 새 객체만), 편집 저장(사용자가 옮긴 가구는
   고정, 동선 보정 없음) 때 돈다. 이동 사유는 `solver_adjustments`에 남는다.
@@ -332,6 +336,14 @@ venv\Scripts\python.exe -m py_compile backend/app.py   # 저장 직후 확인
 줄만 지우면 복구된다. `backend/app.py`에서 `[임시]` 주석으로 표시해 뒀다.
 
 ### 7.9 three.js 가구 형태는 Gemini 설계도로 덮인다
+
+> **현재 구조(4단계 이후):** three.js는 **배치만** 맡고, 가구 모양은 가구마다
+> Gemini가 만든다(`gemini_furniture_parts.generate_object_parts`, `POST /api/scene/parts`).
+> 상품은 상품 사진, 기존 가구는 방 사진에서 `photo_box`로 잘라 낸 부분을 함께 보낸다.
+> 3D 화면은 먼저 배치를 그리고, 모양이 오면 같은 배치로 다시 세운다. 캐시는 가구
+> 정체성 단위(위치 무관)라 편집 뒤에는 새로 들어온 가구만 묻는다. 부품은 색·재질을
+> 가질 수 있다. 모양을 못 받은 가구는 `PARAMETRIC` 빌더(상품 형태 속성 반영)로 그린다.
+> 아래 타입 단위 설계도(`generate_furniture_parts`)는 이전 방식으로 남아 있다.
 
 three.js 의 가구 모양은 원래 `floorplan_3d.js` 의 `BUILDERS` 에 손으로 짜
 넣은 상자 조합이다(27종). 종류가 늘수록 품질 편차가 커서, Gemini 에게 형태를

@@ -23,6 +23,8 @@ from .gemini_telemetry import instrument
 from . import scene_graph
 from .scene_render_2d import render_svg as render_scene_graph_svg
 from .gemini_floorplan_artwork import generate_artwork
+from . import product_attributes
+from . import product_dimensions
 from .gemini_svg_experiment import _extract_svg, generate_svg_text
 from .product_icon_svg import generate_product_icon_svg
 from .topdown_experiment.run import analyze_room
@@ -112,6 +114,10 @@ def enrich_products_with_visual_profiles(
     direct_svg_cache_dir.mkdir(parents=True, exist_ok=True)
     direct_svg_error_dir = cache_root / "product_icon_errors_v4"
     direct_svg_error_dir.mkdir(parents=True, exist_ok=True)
+    # 3D 형태 속성(항목 5). 아이콘용 visual_profile과 형식이 달라 따로 캐시한다
+    attributes_cache_dir = cache_root / "product_attributes_gemini_v1"
+    attributes_cache_dir.mkdir(parents=True, exist_ok=True)
+    attributes_enabled = os.getenv("PRODUCT_ATTRIBUTES_GEMINI", "1").strip().lower() not in {"0", "false", "no", "off"}
     gemini_client: genai.Client | None = None
     gemini_unavailable = False
 
@@ -130,6 +136,8 @@ def enrich_products_with_visual_profiles(
         local_cache_path = local_cache_dir / f"{cache_key}.json"
         direct_svg_cache_path = direct_svg_cache_dir / f"{cache_key}.svg"
         direct_svg_error_path = direct_svg_error_dir / f"{cache_key}.txt"
+        attributes_path = attributes_cache_dir / f"{cache_key}.json"
+        attributes_failed = attributes_cache_dir / f"{cache_key}.failed"
 
         try:
             image_bytes: bytes | None = None
@@ -144,6 +152,11 @@ def enrich_products_with_visual_profiles(
                 or (
                     not gemini_cache_path.exists()
                     and not local_cache_path.exists()
+                )
+                or (
+                    attributes_enabled
+                    and not attributes_path.exists()
+                    and not attributes_failed.exists()
                 )
             )
             if needs_download:
@@ -165,6 +178,15 @@ def enrich_products_with_visual_profiles(
                 )
                 if not mime_type.startswith("image/"):
                     mime_type = "image/jpeg"
+                # 3D 형태 생성(가구별 Gemini 부품)이 상품 사진을 다시 쓰도록 저장한다
+                product_image_dir = cache_root / "product_images_v1"
+                product_image_dir.mkdir(parents=True, exist_ok=True)
+                image_path = product_image_dir / f"{cache_key}.jpg"
+                try:
+                    with Image.open(io.BytesIO(image_bytes)) as decoded:
+                        decoded.convert("RGB").save(image_path, format="JPEG", quality=90)
+                except Exception:
+                    image_path = None
 
             # The attached prototype's direct photo -> SVG route is primary.
             # It costs one Gemini call per newly selected product and is cached.
@@ -263,11 +285,61 @@ def enrich_products_with_visual_profiles(
                 )
             )
 
+            # 사진에서 3D 형태 속성과 (보이면) 치수표를 읽는다. 상품당 1회, 이미지 URL로 캐시
+            attributes = None
+            if attributes_path.exists():
+                attributes = json.loads(attributes_path.read_text(encoding="utf-8"))
+            elif (
+                attributes_enabled
+                and image_bytes
+                and not gemini_unavailable
+                and not attributes_failed.exists()
+            ):
+                try:
+                    if gemini_client is None:
+                        gemini_client = _client()
+                    attributes = product_attributes.extract(
+                        gemini_client,
+                        image_bytes,
+                        mime_type,
+                        title=str(product.get("title") or ""),
+                        kind=str(product.get("type") or ""),
+                        model=(
+                            os.getenv("GEMINI_PRODUCT_ATTRIBUTES_MODEL", "").strip()
+                            or os.getenv("GEMINI_ANALYSIS_MODEL", "").strip()
+                            or DEFAULT_ANALYSIS_MODEL
+                        ),
+                    )
+                    attributes_path.write_text(
+                        json.dumps(attributes, ensure_ascii=False, indent=2),
+                        encoding="utf-8",
+                    )
+                except Exception as exc:
+                    print(f"[product-attributes] 형태 속성 추출 실패, 기본 형태 사용: {exc}")
+                    attributes_failed.write_text(str(exc)[:300], encoding="utf-8")
+            if attributes and attributes.get("dimensions"):
+                product["visual_profile"]["dimensions"] = attributes["dimensions"]
+            stored_image = cache_root / "product_images_v1" / f"{cache_key}.jpg"
+            if stored_image.is_file():
+                product["image_file"] = stored_image.name
+            kind = scene_graph.object_type(product.get("type"))
+            product["attributes3d"] = product_attributes.attributes_for(
+                kind,
+                attributes or product["visual_profile"],
+            )
+
         except Exception as exc:
             print(
                 "[product-visual] "
                 f"상품 이미지 분석 실패: {exc}"
             )
+
+    # 실제 가로·세로·높이(항목 6). 이미지 분석이 실패해도 제목·페이지·규격으로 정한다
+    for product in products:
+        try:
+            product["dimensions"] = product_dimensions.resolve(product, cache_root)
+        except Exception as exc:
+            print(f"[product-dimensions] 치수 추정 실패: {exc}")
 
     return products
 

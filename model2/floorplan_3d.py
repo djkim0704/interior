@@ -292,6 +292,20 @@ def _placed_objects(
     return objects, canvas
 
 
+def _attrs_for(obj_type: str, obj: dict[str, Any]) -> dict[str, Any]:
+    from .product_attributes import attributes_for
+
+    # obj["attrs"]는 상품을 추가할 때 이미 확정된 값이다(관찰값의 False·0 포함).
+    # 다시 거르면 '팔걸이 없음' 같은 값이 타입 기본값으로 덮이므로 기본값 위에 그대로 얹는다
+    attrs = {**attributes_for(obj_type, {}), **(obj.get("attrs") or {})}
+    material = str(obj.get("material") or "").lower()
+    # 사진 분석의 재질 표기(fabric, wood…)를 그대로 쓰면 3D 질감이 바뀐다
+    for key in ("wood", "fabric", "leather", "metal", "glass", "rattan", "marble"):
+        if key in material and "material" not in attrs:
+            attrs["material"] = key
+    return attrs
+
+
 def convert_graph_object(obj: dict[str, Any]) -> dict[str, Any]:
     """Scene Graph 객체 → 3D 씬 객체. 위치·크기·회전·id를 그대로 옮긴다."""
     obj_type = str(obj.get("type") or "unknown").lower()
@@ -316,6 +330,12 @@ def convert_graph_object(obj: dict[str, Any]) -> dict[str, Any]:
         "color": color if len(color) == 7 and color.startswith("#") else preset["color"],
         "confidence": obj.get("confidence"),
         "source": obj.get("source"),
+        # 형태 속성(다리·팔걸이·등받이 등). three.js 빌더가 이 값으로 모양을 바꾼다(항목 4·7)
+        "attrs": _attrs_for(obj_type, obj),
+        "dimension_source": obj.get("dimension_source"),
+        # 가구별 형태 생성에 쓸 사진: 상품은 상품 사진, 기존 가구는 방 사진 속 위치
+        "photo_box": obj.get("photo_box"),
+        "image_file": obj.get("image_file"),
         "is_product": str(obj.get("source") or "") == "selected_product",
         "marker": marker if isinstance(marker, int) else None,
         "product_title": (

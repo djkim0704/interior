@@ -127,6 +127,7 @@
       class="border mb-3"
       data-autostart="true"
       data-edit-url="{{ url_for('edit_scene') }}"
+      data-parts-url="{{ url_for('scene_object_parts') }}"
       data-edit-context="final"
     ></div>
 
@@ -203,7 +204,7 @@
   </script>
   <script
     type="module"
-    src="{{ url_for('static', filename='js/floorplan_3d.js', v='20261002-3d-edit') }}"
+    src="{{ url_for('static', filename='js/floorplan_3d.js', v='20261002-object-parts') }}"
   ></script>
 {% endif %}
 {% endblock %}

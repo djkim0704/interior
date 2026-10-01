@@ -591,7 +591,10 @@ def ensure(layout: dict[str, Any], *, solve_new: bool = True) -> dict[str, Any]:
             rotation = WALL_ROTATION.get(wall, 0.0) if kind in WALL_FACING_TYPES | WALL_MOUNTED_TYPES else 0.0
             plan_w = _number(obj.get("w"), 0.0, 0.0, 1.0) * W
             plan_d = _number(obj.get("h"), 0.0, 0.0, 1.0) * D
-            if plan_w <= 0.01 or plan_d <= 0.01:
+            if _positive(obj.get("w_m")) and _positive(obj.get("d_m")):
+                # 상품 실측 치수처럼 미터 크기만 먼저 들어온 경우 그대로 쓴다
+                w_m, d_m = float(obj["w_m"]), float(obj["d_m"])
+            elif plan_w <= 0.01 or plan_d <= 0.01:
                 w_m, d_m = DEFAULT_SIZES.get(kind, DEFAULT_SIZES["unknown"])
             else:
                 w_m, d_m = local_from_plan(plan_w, plan_d, rotation)
