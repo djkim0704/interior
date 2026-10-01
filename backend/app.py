@@ -67,7 +67,6 @@ from model2 import scene_graph
 from model2 import scene_edit
 from model2 import gemini_reanalyze
 from model2 import spatial_fit
-from model2 import gemini_room_svg_render
 from model2 import gemini_furniture_parts
 from model2 import gemini_furniture_views
 from model2.gemini_retry import (
@@ -5083,7 +5082,7 @@ def dev_use_cached():
 
 
 def _preview_style_prompt() -> str:
-    """무드 문장과 태그를 한 줄로 합친다. 입체 SVG와 부품 설계도가 함께 쓴다."""
+    """무드 문장과 태그를 한 줄로 합친다. 가구별 3D 형태 생성이 스타일 참고로 쓴다."""
     return " ".join(
         [
             str(
@@ -5107,7 +5106,7 @@ def _preview_style_prompt() -> str:
 
 @app.route("/preview-3d")
 def preview_3d():
-    """최종 배치의 AI 입체 SVG와 정확한 3D 배치 화면을 표시한다."""
+    """최종 배치의 3D 화면을 표시한다."""
     if (
         "uploaded_file"
         not in session
@@ -5124,8 +5123,6 @@ def preview_3d():
 
     scene_3d = None
     scene_error = None
-    svg_render_url = None
-    svg_render_error = None
 
     if not layout_path:
         scene_error = (
@@ -5171,75 +5168,6 @@ def preview_3d():
             # 가구 형태는 페이지를 연 뒤 /api/scene/parts로 따로 받는다(가구별 Gemini 생성).
             # 여기서 기다리면 3D 화면이 Gemini 응답만큼 늦게 뜬다.
 
-            if scene_3d and os.getenv(
-                "ENABLE_GEMINI_SVG_RENDER",
-                "true",
-            ).strip().lower() in {
-                "1",
-                "true",
-                "yes",
-                "on",
-            }:
-                try:
-                    selected_products = (
-                        load_session_json_cache(
-                            "selected_products_file",
-                            default=[],
-                        )
-                    )
-                    if not isinstance(
-                        selected_products,
-                        list,
-                    ):
-                        selected_products = []
-
-                    upload_path = (
-                        Path(UPLOAD_DIR)
-                        / os.path.basename(
-                            str(
-                                session.get(
-                                    "uploaded_file",
-                                    "",
-                                )
-                            )
-                        )
-                    )
-                    style_prompt = (
-                        _preview_style_prompt()
-                    )
-                    render_path = (
-                        gemini_room_svg_render
-                        .generate_room_svg(
-                            scene_3d,
-                            upload_path,
-                            selected_products,
-                            GENERATED_DIR,
-                            style_prompt=style_prompt,
-                        )
-                    )
-                    static_relative = (
-                        render_path.resolve()
-                        .relative_to(
-                            Path(
-                                app.static_folder
-                            ).resolve()
-                        )
-                        .as_posix()
-                    )
-                    svg_render_url = url_for(
-                        "static",
-                        filename=static_relative,
-                    )
-                except Exception as render_exc:
-                    svg_render_error = (
-                        "AI 입체 SVG를 만들지 못해 "
-                        "정확한 3D 배치 화면으로 대신합니다."
-                    )
-                    print(
-                        "[gemini-room-svg] "
-                        f"생성 실패: {render_exc}"
-                    )
-
         except Exception as exc:
             scene_error = (
                 "3D 배치 정보를 읽지 "
@@ -5256,12 +5184,6 @@ def preview_3d():
         scene_3d=scene_3d,
         scene_error=scene_error,
         layout_source=layout_source,
-        svg_render_url=(
-            svg_render_url
-        ),
-        svg_render_error=(
-            svg_render_error
-        ),
     )
 
 

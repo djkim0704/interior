@@ -85,16 +85,10 @@ GEMINI_SVG_MODEL=gemini-3.5-flash-lite      # 2D 가구 그림(또는 gemini 렌
 FLOORPLAN_2D_RENDERER=scene_graph           # 2D 평면도 렌더러 (7.2)
 FLOORPLAN_2D_ARTWORK=gemini                 # 가구 겉모양: gemini | local (7.2)
 FLOORPLAN_CACHE=1                           # 평면도 캐시 (30분 TTL)
-ENABLE_GEMINI_SVG_RENDER=true               # /preview-3d 의 AI 입체 SVG
-GEMINI_ROOM_SVG_MODEL=gemini-3.5-flash-lite # 입체 SVG 우선 모델
-GEMINI_ROOM_SVG_FALLBACK_MODELS=gemini-3.1-flash-lite,gemini-2.5-flash-lite
-GEMINI_FURNITURE_PARTS_MODEL=               # three.js 가구 형태 설계도 (7.9)
+GEMINI_FURNITURE_IMAGE_MODEL=gemini-2.5-flash-image  # 3D 가구 입체 그림 (7.9)
+GEMINI_FURNITURE_PARTS_MODEL=               # 3D 가구 부품 모형 (7.9)
 SERPAPI_CACHE_TTL_SECONDS=21600             # 상품 검색 결과 6시간 재사용
 ```
-
-> `GEMINI_ROOM_SVG_MODEL` 에 `-lite` 계열을 두면 입체 SVG 가 원근도 그림자도
-> 없는 납작한 도형으로 나온다. 실패가 아니라 "성공했지만 빈약한" 결과라
-> 폴백도 걸리지 않는다. 품질이 필요하면 `gemini-3.6-flash` 로 올린다.
 
 > **주의** `.env`는 Flask 자동 리로더의 감시 대상이 아니다. 값을 바꾸면
 > **서버를 직접 재시작해야** 반영된다. `.py` 파일은 저장만 하면 자동 리로드된다.
@@ -166,7 +160,7 @@ model2/
   web_floorplan.py           평면도 생성 (현재 사용 중)
   topdown_experiment/run.py  1단계: 사진 → 배치 JSON
   gemini_svg_experiment.py   2단계: 배치 JSON → 평면도 SVG
-  gemini_room_svg_render.py  /preview-3d 의 입체 렌더 SVG
+  gemini_furniture_views.py  3D 가구별 입체 그림(4방향)
   gemini_furniture_parts.py  three.js 가구 형태 설계도 (7.9)
   gemini_retry.py            Gemini 503/429 재시도 공통 모듈
   floorplan_3d.py            배치 JSON → three.js 씬 데이터
@@ -267,30 +261,15 @@ frontend/templates/, static/      Jinja 템플릿과 정적 파일
 바꿨을 때만 모델이 id를 빠뜨릴 수 있으니, 그때는 실제로 편집이 되는지
 확인해야 한다.
 
-### 7.3 /preview-3d 의 "3D"는 두 가지다
+### 7.3 3D 화면의 배치와 모습은 따로 만든다
 
-`/preview-3d`에는 성격이 다른 두 화면이 **위아래로 나란히** 뜬다. 택일이
-아니다. 템플릿의 `{% if svg_render_url %}` 블록은 위쪽 SVG만 감싸고,
-three.js 뷰어는 그 바깥에 있어 항상 렌더된다.
+three.js 씬의 **배치**는 Gemini가 만들지 않는다. Scene Graph에서 그대로 옮기므로
+좌표·치수가 2D와 같고 API와 무관하게 항상 뜬다. 가구의 **모습**은 Gemini가 가구마다
+만든 입체 그림(또는 부품 모형)이다(7.9). 모습을 못 받은 가구는 코드의 기본 모양으로
+그려지므로, 그림 생성이 실패해도 3D 자체는 정상이다. 실패 사유는 서버 콘솔의
+`[gemini-furniture-views]`, `[gemini-object-parts]` 줄에 남는다.
 
-| | 위치 | 만드는 주체 | 실패하면 |
-|---|---|---|---|
-| **AI 입체 SVG** | 위 | Gemini (`gemini_room_svg_render.py`) | 블록만 사라짐 |
-| **3D 배치 화면** | 아래 | 로컬 three.js (`floorplan_3d.py` → `scene.json`) | — |
-
-three.js 씬의 **배치**는 Gemini가 만들지 않는다. 배치 JSON에서 결정론적으로
-계산하므로 좌표·치수가 정확하고 API 한도와 무관하게 항상 동작한다.
-
-다만 **가구의 형태**는 Gemini가 거들 수 있다(7.9). 배치와 형태는 별개다.
-
-> AI 입체 SVG를 만들지 못해 정확한 3D 배치 화면으로 대신합니다.
-
-이 안내가 뜨는 건 **장식용 일러스트 한 장만 실패한 것**이고 3D 자체는
-정상이다. 기능 고장으로 오해하기 쉽다. 실패 사유는 서버 콘솔의
-`[gemini-room-svg] 생성 실패:` 줄과 `.failed` 파일에 남는다.
-
-입체 SVG가 필요 없으면 `ENABLE_GEMINI_SVG_RENDER=false`로 끈다. 안내 문구도
-사라지고 RPD도 아낀다.
+(예전에 `/preview-3d` 위쪽에 있던 장식용 "AI 입체 SVG" 한 장짜리 일러스트는 삭제했다.)
 
 ### 7.4 Gemini 클라이언트는 변수에 담아야 한다
 
@@ -336,7 +315,7 @@ venv\Scripts\python.exe -m py_compile backend/app.py   # 저장 직후 확인
 |---|---|
 | 세션에 남은 값 | 브라우저 쿠키 삭제 후 플로우 처음부터 |
 | 평면도 캐시 | `frontend/static/generated/`의 해당 파일 삭제 (또는 30분 대기) |
-| 렌더 실패 쿨다운 | `gemini_room_svg_v1/`의 `.failed` 파일 삭제 |
+| 3D 그림·모형 실패 쿨다운 | `gemini_furniture_views_v1/`, `gemini_object_parts_v1/`의 `.failed` 파일 삭제 |
 
 ### 7.8 현재 임시로 건너뛴 단계가 있다
 
@@ -365,7 +344,7 @@ three.js 의 가구 모양은 원래 `floorplan_3d.js` 의 `BUILDERS` 에 손으
 넣은 상자 조합이다(27종). 종류가 늘수록 품질 편차가 커서, Gemini 에게 형태를
 **부품 목록으로** 받아 덮어쓰는 경로를 뒀다(`gemini_furniture_parts.py`).
 
-완성된 그림을 Gemini 에게 그리게 하는 입체 SVG(7.3)와 혼동하지 말 것. 이쪽은
+이 타입 단위 설계도는
 그림이 아니라 좌표 JSON 만 받는다. 가벼운 작업이라 무료 등급 모델로도
 생성되고, 재질·조명·원근은 three.js 가 GPU 로 처리한다.
 
