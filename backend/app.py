@@ -66,6 +66,7 @@ from model2 import floorplan_3d
 from model2 import scene_graph
 from model2 import scene_edit
 from model2 import gemini_reanalyze
+from model2 import spatial_fit
 from model2 import gemini_room_svg_render
 from model2 import gemini_furniture_parts
 from model2.gemini_retry import (
@@ -4119,6 +4120,8 @@ def toggle_furniture():
     return jsonify(
         {
             "ok": True,
+            # 결과 화면의 3D도 같은 배치로 바꾼다(항목 13·20)
+            "scene_3d": final_scene_3d(),
             "svg_markup": (
                 read_generated_svg(
                     svg_filename
@@ -4159,6 +4162,37 @@ def search_products():
                 display=6,
             )
         )
+        # 고른 종류가 있으면 이 방에 실제로 맞는지 함께 보여 준다(항목 21).
+        # 직접 검색은 무드 점수가 없으니 공간·크기만 합친다
+        item_type = str(request.args.get("type") or "")
+        layout, replace_id = (
+            fit_layout_and_target(request.args.get("replace_id"))
+            if item_type in PURCHASE_LABELS
+            else (None, None)
+        )
+        if layout is not None:
+            scorer = spatial_fit.make_scorer(layout, item_type, replace_id=replace_id)
+            for product in products:
+                try:
+                    fit = scorer(product)
+                except Exception as fit_exc:
+                    print(f"[search-products] 적합도 계산 실패: {fit_exc}")
+                    continue
+                total = (
+                    spatial_fit.WEIGHTS["space"] * fit["space"]
+                    + spatial_fit.WEIGHTS["size"] * fit["size"]
+                ) / (spatial_fit.WEIGHTS["space"] + spatial_fit.WEIGHTS["size"])
+                product["fit"] = {
+                    "mood": None,
+                    "space": fit["space"],
+                    "size": fit["size"],
+                    "total": round(total * (1 if fit["fits"] else 0.4), 3),
+                    "fits": fit["fits"],
+                    "reasons": fit["reasons"][:3],
+                    "dimensions": fit["dimensions"],
+                }
+            # 들어가는 상품을 앞에 둔다. 같은 조건이면 검색 순서를 지킨다
+            products.sort(key=lambda p: -((p.get("fit") or {}).get("total") or 0))
 
     except ValueError as exc:
         return jsonify(
@@ -4344,6 +4378,8 @@ def add_product():
     return jsonify(
         {
             "ok": True,
+            # 결과 화면의 3D도 같은 배치로 바꾼다(항목 13·20)
+            "scene_3d": final_scene_3d(),
             "svg_markup": (
                 read_generated_svg(
                     svg_filename
@@ -4445,6 +4481,9 @@ def result():
         modified_svg_markup=(
             modified_svg_markup
         ),
+        # 한 화면에서 2D/3D 전환·편집·추천을 하도록 최종 배치의 3D 데이터를 넘긴다(항목 20)
+        scene_3d=final_scene_3d(),
+        purchase_labels=PURCHASE_LABELS,
         replaceable_types=sorted(
             PURCHASE_LABELS
         ),
@@ -4563,6 +4602,143 @@ def choice_object_index(choice, objects):
         return int(choice.get("source_index"))
     except (TypeError, ValueError):
         return None
+
+
+def final_scene_3d():
+    """결과 화면의 3D 데이터. 유지·제거·상품이 반영된 최종 배치로 만든다."""
+    layout_path, _ = resolve_final_layout_path()
+    if not layout_path or not os.path.isfile(layout_path):
+        return None
+    try:
+        layout = json.loads(Path(layout_path).read_text(encoding="utf-8"))
+        plan, _ = current_room_plan()
+        with floorplan_generation_lock:
+            scene = floorplan_3d.build_scene(layout, plan)
+        return scene if scene.get("objects") else None
+    except Exception as exc:
+        print(f"[result-3d] 씬 데이터 생성 실패: {exc}")
+        return None
+
+
+def fit_layout_and_target(replace_id=None):
+    """적합도를 잴 방 상태와 교체 대상 id.
+
+    최종 배치(상품 포함)를 쓰되, 교체로 표시돼 최종 배치에서 빠진 가구는 기준 배치에서
+    가져와 다시 넣는다. 그래야 '그 자리에 들어가는가'를 잴 수 있다.
+    """
+    final_path, _ = resolve_final_layout_path()
+    base_path = resolve_session_generated_file("floorplan_layout_file")
+    if not final_path or not os.path.isfile(final_path):
+        return None, None
+    layout = json.loads(Path(final_path).read_text(encoding="utf-8"))
+    if not scene_graph.is_scene_graph(layout):
+        return None, None
+    if replace_id and not any(str(o.get("id")) == str(replace_id) for o in layout.get("objects") or []):
+        if base_path and os.path.isfile(base_path):
+            base = json.loads(Path(base_path).read_text(encoding="utf-8"))
+            target = next((o for o in base.get("objects") or [] if str(o.get("id")) == str(replace_id)), None)
+            if target is not None:
+                layout = {**layout, "objects": list(layout.get("objects") or []) + [target]}
+            else:
+                replace_id = None
+        else:
+            replace_id = None
+    return layout, replace_id
+
+
+def recommendation_context():
+    """추천에 쓰는 무드 정보. /product-selection과 같은 방식으로 만든다."""
+    mood_analysis = furniture_recommender.analyze_mood_context(
+        str(session.get("mood_prompt", "")),
+        [str(tag) for tag in session.get("style_tags", [])],
+        str(session.get("selected_mood_image", "")),
+    )
+    selected_image_path = None
+    relative = str(session.get("selected_mood_image", "") or "").strip()
+    if relative:
+        try:
+            root = MOOD_LIBRARY_DIR.resolve()
+            candidate = (MOOD_LIBRARY_DIR / relative).resolve()
+            candidate.relative_to(root)
+            if candidate.is_file():
+                selected_image_path = candidate
+        except (OSError, ValueError):
+            selected_image_path = None
+    if selected_image_path and os.getenv("GEMINI_MOOD_ANALYSIS_ENABLED", "1").strip().lower() not in {"0", "false", "off"}:
+        mood_analysis = furniture_recommender.enrich_mood_analysis_with_gemini(
+            mood_analysis,
+            str(session.get("mood_prompt", "")),
+            selected_image_path,
+            os.path.join(PRODUCT_CACHE_DIR, "gemini_mood_analysis"),
+        )
+    observed = {
+        key: list(mood_analysis.get(key, []))
+        for key in ("colors", "materials", "forms")
+    }
+    image_service = None
+    if selected_image_path and os.getenv("PRODUCT_CLIP_ENABLED", "1").strip().lower() not in {"0", "false", "off"}:
+        image_service = furniture_recommender.ClipImageSimilarityService(
+            os.path.join(PRODUCT_CACHE_DIR, "clip_product_embeddings")
+        )
+    return mood_analysis, observed, selected_image_path, image_service
+
+
+def recommendation_provider():
+    """테스트에서 바꿔 끼울 수 있게 함수로 둔다."""
+    return furniture_recommender.SerpApiShoppingProvider()
+
+
+def public_product(item):
+    keys = ("title", "link", "image", "price", "shop", "brand", "maker", "productId", "snippet", "category1", "fit")
+    return {key: item.get(key) for key in keys if item.get(key) is not None}
+
+
+@app.post("/api/recommendations")
+def api_recommendations():
+    """무드 + 실제 크기 + 방 크기 + 충돌 + 동선을 함께 본 추천 (항목 8·21).
+
+    body: {"type": "sofa", "replace_id": "sofa_1"?}
+    """
+    if "uploaded_file" not in session:
+        return jsonify({"ok": False, "error": "업로드된 방 사진이 없습니다."}), 400
+    payload = request.get_json(silent=True) or {}
+    category = str(payload.get("type") or "")
+    if category not in PURCHASE_LABELS:
+        return jsonify({"ok": False, "error": "추천할 수 없는 가구 종류입니다."}), 400
+    layout, replace_id = fit_layout_and_target(payload.get("replace_id"))
+    scorer = (
+        spatial_fit.make_scorer(layout, category, replace_id=replace_id)
+        if layout is not None
+        else None
+    )
+    mood_analysis, observed, selected_image_path, image_service = recommendation_context()
+    shown = set(str(i) for i in session.get("shown_product_ids", []))
+    try:
+        products, shown, queries = furniture_recommender.recommend_furniture(
+            category,
+            mood_analysis.get("mood_scores", {}),
+            observed,
+            selected_image_path,
+            str(session.get("recommendation_session_id") or uuid.uuid4().hex),
+            int(session.get("product_request_round", 0)),
+            shown,
+            provider=recommendation_provider(),
+            image_similarity_service=image_service,
+            spatial_scorer=scorer,
+        )
+    except Exception as exc:
+        print(f"[recommendations] 실패: {exc}")
+        return jsonify({"ok": False, "error": "추천 상품을 불러오지 못했습니다."}), 502
+    session["shown_product_ids"] = sorted(shown)
+    return jsonify(
+        {
+            "ok": True,
+            "type": category,
+            "replace_id": replace_id,
+            "queries": queries,
+            "products": [public_product(item) for item in products],
+        }
+    )
 
 
 def resolve_final_layout_path():

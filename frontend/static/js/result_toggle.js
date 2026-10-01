@@ -47,6 +47,10 @@
       }
       // 평면도 SVG 교체 + 드래그 재바인딩
       replacePlan(data.svg_markup);
+      // 같은 화면의 3D도 새 배치로 바꾼다
+      if (data.scene_3d) {
+        window.dispatchEvent(new CustomEvent("floorplan:scene-updated", { detail: data.scene_3d }));
+      }
     } catch (err) {
       console.error("toggle 네트워크 오류:", err);
     } finally {

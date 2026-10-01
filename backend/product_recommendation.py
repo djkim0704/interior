@@ -1137,8 +1137,15 @@ def recommend_furniture(
     provider: ProductSearchProvider,
     image_similarity_service: ImageSimilarityService | None = None,
     final_limit: int = FINAL_RECOMMENDATION_COUNT,
+    spatial_scorer: Any = None,
+    spatial_top_n: int = 15,
 ) -> tuple[list[dict[str, Any]], set[str], list[str]]:
-    """Run candidate collection, filtering, scoring and diverse selection."""
+    """Run candidate collection, filtering, scoring and diverse selection.
+
+    spatial_scorer(item) -> {"space", "size", "fits", "reasons", ...}가 주어지면
+    무드 점수 상위 spatial_top_n개를 방에 실제로 놓아 보고 공간·크기 적합도를
+    합친 점수로 다시 정렬한다(항목 8). 평가하지 않은 후보는 공간 점수를 0.5로 본다.
+    """
     category = normalize_category(category)
     queries = generate_search_queries(
         category,
@@ -1255,6 +1262,33 @@ def recommend_furniture(
         item["_final_score"] = min(1.0, final + min(occurrence[identity] - 1, 3) * 0.01)
 
     scoring_pool.sort(key=lambda item: float(item.get("_final_score", 0.0)), reverse=True)
+    if spatial_scorer is not None:
+        from model2.spatial_fit import WEIGHTS, combine
+
+        for index, item in enumerate(scoring_pool):
+            mood = float(item.get("_final_score", 0.0))
+            item["_mood_score"] = mood
+            fit = None
+            if index < spatial_top_n:
+                try:
+                    fit = spatial_scorer(item)
+                except Exception as exc:
+                    LOGGER.warning("spatial_fit_failed title=%r error=%s", item.get("title"), exc)
+            if fit is None:
+                item["_final_score"] = round(WEIGHTS["mood"] * mood + (WEIGHTS["space"] + WEIGHTS["size"]) * 0.5, 4)
+                continue
+            item["_final_score"] = combine(mood, fit)
+            # 화면에 보여 줄 적합도(항목 21)
+            item["fit"] = {
+                "mood": round(mood, 3),
+                "space": fit["space"],
+                "size": fit["size"],
+                "total": item["_final_score"],
+                "fits": fit.get("fits", True),
+                "reasons": fit.get("reasons", [])[:3],
+                "dimensions": fit.get("dimensions"),
+            }
+        scoring_pool.sort(key=lambda item: float(item.get("_final_score", 0.0)), reverse=True)
     selected = select_diverse_products(scoring_pool, final_limit)
     updated_ids = set(shown_product_ids)
     updated_ids.update(

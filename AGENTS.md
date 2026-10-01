@@ -236,6 +236,15 @@ frontend/templates/, static/      Jinja 템플릿과 정적 파일
   사진 속 치수표 → 규격(퀸·3인용) → 타입 기본값). 출처는 `dimension_source`, 실측
   여부는 `measured`로 남는다. 형태 속성은 `model2/product_attributes.py`(사진 → Gemini).
   `/add-product`가 새 상품만 분석한다(아이콘·속성·치수, 이미지 URL 단위 캐시).
+- **추천은 무드 + 공간을 함께 본다**(`model2/spatial_fit.py`). 상품을 실제 치수로
+  Scene Graph에 넣어 보정기로 자리를 찾게 한 뒤 공간 적합도(겹침·동선)와 크기
+  적합도(교체 대상 또는 방 면적 대비)를 잰다. `recommend_furniture(spatial_scorer=...)`가
+  무드 상위 15개만 평가해 무드 55% + 공간 30% + 크기 15%로 다시 정렬한다. 결과 화면의
+  "추천받기"(`POST /api/recommendations`)와 검색(`/search-products?type=`)이 이걸 쓴다.
+  추천 단계에서는 상품 페이지를 받지 않는다(제목·설명의 치수만 사용).
+- 결과 화면(`/result`)이 통합 화면이다: 2D/3D 전환, 3D 옮기기, 유지·제거·교체,
+  검색·추천(적합도 표시). `/furniture-choice`, `/product-selection`은 여전히 `[임시]`로
+  건너뛴다.
 - 배치 보정은 `model2/placement_solver.py` 하나가 맡는다(충돌·벽·문 앞·동선).
   분석 직후, 상품 추가(`ensure`, 새 객체만), 편집 저장(사용자가 옮긴 가구는
   고정, 동선 보정 없음) 때 돈다. 이동 사유는 `solver_adjustments`에 남는다.

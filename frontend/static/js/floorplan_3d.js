@@ -1158,7 +1158,8 @@ function init() {
   }
 
   let viewer = null;
-  const box2d = document.getElementById("editableFloorplanBox");
+  // 화면마다 2D 평면도 상자가 다르다(평면도 화면 / 결과 화면)
+  const box2d = document.getElementById(host.dataset.box2d || "editableFloorplanBox");
   const controlsBar = document.getElementById("floorplan3dControls");
 
   function describe(obj) {
