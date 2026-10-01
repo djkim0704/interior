@@ -81,8 +81,9 @@ OAuth 액세스 토큰이라 몇 시간 뒤 만료되며 `401 UNAUTHENTICATED`�
 
 ```ini
 GEMINI_LAYOUT_MODEL=gemini-3.1-flash-lite   # 1단계 배치 분석 (무료 RPD 500)
-GEMINI_SVG_MODEL=gemini-3.5-flash-lite      # FLOORPLAN_2D_RENDERER=gemini 일 때만 사용
+GEMINI_SVG_MODEL=gemini-3.5-flash-lite      # 2D 가구 그림(또는 gemini 렌더러의 평면도 전체)
 FLOORPLAN_2D_RENDERER=scene_graph           # 2D 평면도 렌더러 (7.2)
+FLOORPLAN_2D_ARTWORK=gemini                 # 가구 겉모양: gemini | local (7.2)
 FLOORPLAN_CACHE=1                           # 평면도 캐시 (30분 TTL)
 ENABLE_GEMINI_SVG_RENDER=true               # /preview-3d 의 AI 입체 SVG
 GEMINI_ROOM_SVG_MODEL=gemini-3.5-flash-lite # 입체 SVG 우선 모델
@@ -212,6 +213,12 @@ frontend/templates/, static/      Jinja 템플릿과 정적 파일
 - legacy 필드만 채워 넣은 객체(상품 추가 등)는 `ensure()`가 미터 값을 복원한다.
 - 2D 렌더러를 Gemini로 되돌리려면 `FLOORPLAN_2D_RENDERER=gemini`. 개선 전후
   비교 실험용으로만 남겨 둔 경로다.
+- 가구 **겉모양**은 Gemini가 그린다(`model2/gemini_floorplan_artwork.py`). 가구마다
+  자기 크기 상자 안의 그림 조각만 받고, 렌더러가 그 외곽을 Scene Graph 바닥면에
+  맞춰 끼운다. 그래서 그림이 풍성해도 좌표는 3D와 같다. 실패하면 그 가구만 코드의
+  기본 모양으로 그린다. 캐시 키에 위치가 없어서 편집 후 재렌더에 호출이 없다.
+  Gemini 3 계열은 `thinking_budget=0`을 400으로 거절하므로
+  `gemini_svg_experiment.minimal_thinking(model)`을 쓴다.
 - 배치 보정은 `model2/placement_solver.py` 하나가 맡는다(충돌·벽·문 앞·동선).
   분석 직후, 상품 추가(`ensure`, 새 객체만), 편집 저장(사용자가 옮긴 가구는
   고정, 동선 보정 없음) 때 돈다. 이동 사유는 `solver_adjustments`에 남는다.

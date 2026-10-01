@@ -21,6 +21,7 @@ import re
 from typing import Any
 
 from . import scene_graph
+from . import svg_geometry
 
 MARGIN = 90.0
 LOW_CONFIDENCE = 0.6
@@ -277,14 +278,43 @@ def layout_metrics(graph: dict[str, Any]) -> dict[str, float]:
     }
 
 
-def render_svg(layout: dict[str, Any], *, title: str | None = None) -> str:
+def _artwork_box(markup: str) -> tuple[float, float, float, float] | None:
+    """Gemini 그림 조각이 실제로 그려진 범위. 이 범위를 가구 바닥면에 맞춘다."""
+    try:
+        root = svg_geometry.ET.fromstring(f'<svg xmlns="http://www.w3.org/2000/svg"><g id="a">{markup}</g></svg>')
+    except svg_geometry.ET.ParseError:
+        return None
+    box = svg_geometry.group_boxes(root, ["a"]).get("a")
+    if box is None or box[2] - box[0] < 1 or box[3] - box[1] < 1:
+        return None
+    return box
+
+
+def render_svg(
+    layout: dict[str, Any],
+    *,
+    title: str | None = None,
+    artwork: dict[str, Any] | None = None,
+) -> str:
+    """Scene Graph를 그린다.
+
+    artwork(gemini_floorplan_artwork 결과)가 있으면 가구 모양과 바닥 무늬를 Gemini
+    그림으로 쓴다. 위치·크기·회전은 어느 경우든 Scene Graph 값이다.
+    """
     graph = scene_graph.ensure(layout) if not _is_synced(layout) else layout
+    art = artwork or {}
+    art_objects = art.get("objects") or {}
     m = layout_metrics(graph)
     px = m["px_per_m"]
     fx, fy, fw, fh = m["floor_x"], m["floor_y"], m["floor_w"], m["floor_h"]
     room = graph["room"]
-    floor_color = room.get("floor_color") if _HEX.match(str(room.get("floor_color") or "")) else "#d8b993"
-    wall_color = "#3d342c"
+    art_room = art.get("room") or {}
+    floor_color = next(
+        (c for c in (art_room.get("floor_color"), room.get("floor_color")) if _HEX.match(str(c or ""))),
+        "#d8b993",
+    )
+    wall_color = art_room.get("wall_color") if _HEX.match(str(art_room.get("wall_color") or "")) else "#3d342c"
+    floor_fill = f"url(#{art['floor_pattern_id']})" if art.get("floor_pattern_id") else "url(#sg-planks)"
 
     out = [
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {_f(m["canvas_w"])} {_f(m["canvas_h"])}" '
@@ -299,12 +329,13 @@ def render_svg(layout: dict[str, Any], *, title: str | None = None) -> str:
         '<filter id="sg-shadow" x="-20%" y="-20%" width="140%" height="140%">'
         '<feDropShadow dx="1.5" dy="2.5" stdDeviation="2.2" flood-color="#000" flood-opacity="0.18"/>'
         "</filter>"
-        "</defs>",
+        + (art.get("defs") or "")
+        + "</defs>",
         f'<rect x="0" y="0" width="{_f(m["canvas_w"])}" height="{_f(m["canvas_h"])}" fill="#faf7f2" stroke="none"/>',
         # 벽(바깥 테두리) — 바닥보다 커서 _floor_box의 '가장 작은 rect'에 걸리지 않는다
         f'<rect x="{_f(fx - 14)}" y="{_f(fy - 14)}" width="{_f(fw + 28)}" height="{_f(fh + 28)}" fill="{wall_color}" stroke="none"/>',
         # 바닥은 편집기가 좌표 환산 기준으로 읽으므로 반올림 오차를 줄이려 소수 3자리로 쓴다
-        f'<rect x="{fx:.3f}" y="{fy:.3f}" width="{fw:.3f}" height="{fh:.3f}" fill="url(#sg-planks)" stroke="{_shade(floor_color, 0.7)}" stroke-width="1" data-floor="true"/>',
+        f'<rect x="{fx:.3f}" y="{fy:.3f}" width="{fw:.3f}" height="{fh:.3f}" fill="{floor_fill}" stroke="{_shade(floor_color, 0.7)}" stroke-width="1" data-floor="true"/>',
     ]
 
     objects = sorted(
@@ -317,11 +348,22 @@ def render_svg(layout: dict[str, Any], *, title: str | None = None) -> str:
         w, d = float(obj["w_m"]) * px, float(obj["d_m"]) * px
         cx, cy = fx + float(obj["cx"]) * px, fy + float(obj["cy"]) * px
         color = _color(obj)
+        drawn = art_objects.get(str(obj["id"]))
+        art_box = _artwork_box(drawn["markup"]) if drawn else None
         if kind == "door":
             # 문·창은 3D와 같은 두께(d)로 그린다. 틀을 굵게 그리면 2D·3D 외곽이 달라진다
             body = _door(w, d, color)
         elif kind == "window":
             body = _window(w, d, color)
+        elif art_box is not None:
+            # Gemini 그림이 그려진 범위를 가구 바닥면(w×d)에 정확히 맞춘다.
+            # 그림이 상자를 벗어나도 외곽이 3D 바닥면과 같아진다.
+            bx0, by0, bx1, by1 = art_box
+            body = (
+                f'<g transform="translate({_f(-w / 2)} {_f(-d / 2)}) '
+                f'scale({w / (bx1 - bx0):.5f} {d / (by1 - by0):.5f}) '
+                f'translate({-bx0:.3f} {-by0:.3f})" data-artwork="gemini">{drawn["markup"]}</g>'
+            )
         else:
             body = SHAPES.get(kind, _generic)(w, d, color)
         confidence = float(obj.get("confidence") if obj.get("confidence") is not None else 1.0)

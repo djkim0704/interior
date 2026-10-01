@@ -187,6 +187,17 @@ def _ensure_not_truncated(response: object) -> None:
         )
 
 
+def minimal_thinking(model: str) -> types.ThinkingConfig:
+    """thinking을 최소로 줄이는 설정. 모델 세대마다 받는 옵션이 다르다.
+
+    Gemini 3 계열은 thinking_budget=0을 400 INVALID_ARGUMENT로 거절하고
+    thinking_level만 받는다. 2.5 이하는 thinking_budget=0으로 끈다.
+    """
+    if str(model).lower().startswith("gemini-3"):
+        return types.ThinkingConfig(thinking_level=types.ThinkingLevel.MINIMAL)
+    return types.ThinkingConfig(thinking_budget=0)
+
+
 def generate_svg_text(
     client: genai.Client,
     image_path: Path,
@@ -209,7 +220,7 @@ def generate_svg_text(
             max_output_tokens=20000,
             # thinking 토큰이 max_output_tokens를 함께 쓰므로 SVG가 잘릴 수 있다.
             # 배치 JSON이 이미 주어진 상태의 변환 작업이라 thinking을 끈다.
-            thinking_config=types.ThinkingConfig(thinking_budget=0),
+            thinking_config=minimal_thinking(model),
         ),
     )
     if not response.text:

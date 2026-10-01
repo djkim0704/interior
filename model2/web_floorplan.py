@@ -22,6 +22,7 @@ from .gemini_retry import call_with_retry
 from .gemini_telemetry import instrument
 from . import scene_graph
 from .scene_render_2d import render_svg as render_scene_graph_svg
+from .gemini_floorplan_artwork import generate_artwork
 from .gemini_svg_experiment import _extract_svg, generate_svg_text
 from .product_icon_svg import generate_product_icon_svg
 from .topdown_experiment.run import analyze_room
@@ -1458,6 +1459,10 @@ def generate_floorplan_for_web(
     if _floorplan_renderer() == "scene_graph":
         return _finish_with_scene_graph(
             scene,
+            client=client,
+            image_path=image_path,
+            output_dir=output_dir,
+            svg_model=svg_model,
             layout_path=layout_path,
             svg_path=svg_path,
             base_svg_path=base_svg_path,
@@ -1564,9 +1569,35 @@ SELECTABLE_TYPES = SELECTABLE_CATEGORIES | {
 }
 
 
+def _artwork_mode() -> str:
+    """가구 그림을 누가 그릴지. gemini(기본) | local(코드의 기본 모양)."""
+    value = os.getenv("FLOORPLAN_2D_ARTWORK", "gemini").strip().lower()
+    return value if value in {"gemini", "local"} else "gemini"
+
+
+def load_artwork(layout: dict[str, Any], base_dir: str | Path) -> dict[str, Any] | None:
+    name = str(layout.get("artwork_file") or "")
+    if not name:
+        return None
+    path = Path(base_dir) / Path(name).name
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def render_floorplan_svg(layout: dict[str, Any], base_dir: str | Path) -> str:
+    """Scene Graph + (있으면) Gemini 가구 그림 → 평면도 SVG. 편집 저장 후 재렌더에도 쓴다."""
+    return render_scene_graph_svg(layout, artwork=load_artwork(layout, base_dir))
+
+
 def _finish_with_scene_graph(
     scene: dict[str, Any],
     *,
+    client: genai.Client,
+    image_path: Path,
+    output_dir: Path,
+    svg_model: str,
     layout_path: Path,
     svg_path: Path,
     base_svg_path: Path,
@@ -1581,11 +1612,29 @@ def _finish_with_scene_graph(
         width_m=room_width,
         depth_m=room_depth,
     )
+    artwork = None
+    if _artwork_mode() == "gemini":
+        # 가구 겉모양만 Gemini가 그린다. 위치·크기·회전은 그래프 값으로 고정된다.
+        # 캐시 키에 위치가 없어서 같은 사진이면 다시 부르지 않는다.
+        artwork = generate_artwork(
+            client,
+            image_path,
+            graph,
+            model=svg_model,
+            cache_dir=output_dir / "gemini_floorplan_artwork_v1",
+        )
+        if artwork:
+            artwork_path = output_dir / f"{image_path.stem}_model2_artwork.json"
+            artwork_path.write_text(
+                json.dumps(artwork, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            graph["artwork_file"] = artwork_path.name
     layout_path.write_text(
         json.dumps(graph, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
-    svg_markup = render_scene_graph_svg(graph)
+    svg_markup = render_scene_graph_svg(graph, artwork=artwork)
     svg_path.write_text(svg_markup, encoding="utf-8")
     base_svg_path.write_text(svg_markup, encoding="utf-8")
 
@@ -1611,7 +1660,8 @@ def _finish_with_scene_graph(
         "provider": "model2_gemini_svg",
         "renderer": "scene_graph",
         "layout_model": layout_model,
-        "svg_model": None,
+        "svg_model": svg_model if artwork else None,
+        "artwork": bool(artwork),
         "room": graph["room"],
     }
 

@@ -64,7 +64,6 @@ from model2 import (
 )
 from model2 import floorplan_3d
 from model2 import scene_graph
-from model2.scene_render_2d import render_svg as render_scene_graph_svg
 from model2 import gemini_room_svg_render
 from model2 import gemini_furniture_parts
 from model2.gemini_retry import (
@@ -2123,8 +2122,10 @@ def save_floorplan_edit():
                 refreshed_svg = (
                     model2_floorplan
                     .prepare_floorplan_edit_markup(
-                        render_scene_graph_svg(
-                            edited_layout
+                        model2_floorplan
+                        .render_floorplan_svg(
+                            edited_layout,
+                            GENERATED_DIR,
                         ),
                         edited_layout,
                     )
