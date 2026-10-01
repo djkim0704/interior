@@ -25,7 +25,7 @@ from .topdown_experiment.run import analyze_room
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_ANALYSIS_MODEL = "gemini-3.6-flash"
+DEFAULT_ANALYSIS_MODEL = "gemini-2.5-flash"
 
 TYPE_MAP = {
     "bed": "bed",
@@ -80,6 +80,9 @@ def _client() -> genai.Client:
     return genai.Client(
         api_key=api_key,
         http_options=types.HttpOptions(
+            # SDK 기본값은 "재시도 안 함"이라 503/429 한 번에 바로 실패한다.
+            # 지수 백오프 재시도로 일시적 과부하를 흡수한다.
+            retry_options=types.HttpRetryOptions(attempts=5),
             client_args={"trust_env": False},
             async_client_args={"trust_env": False},
         ),
