@@ -1050,7 +1050,48 @@ def design_detail(design_id):
             purchase_types
         ),
         selected_products=selected_products,
+        scene_3d=saved_design_scene_3d(design),
     )
+
+
+def saved_design_scene_3d(design):
+    """저장 디자인의 3D 데이터. 따로 저장하지 않고 평면도 파일 이름으로 배치 파일을 찾는다.
+
+      saved_<난수>__<배치 파일 이름>.svg  → <배치 파일 이름>.json (저장할 때 넣어 둔 이름)
+      modified_floorplan_<토큰>.svg      → modified_layout_<토큰>.json
+      edited_floorplan_<토큰>.svg        → edited_layout_<토큰>.json
+      upload_<이름>_model2_floorplan.svg → upload_<이름>_model2_layout.json
+    결과 평면도가 있으면 그것만 본다. 원본 배치로 대신 그리면 추가한 상품이 빠진 3D가
+    '선택 반영 평면도' 옆에 떠서 헷갈린다. 결과 평면도가 없는 디자인만 원본을 본다.
+    """
+    candidates = (
+        [design.modified_floorplan_file]
+        if design.modified_floorplan_file
+        else [design.original_floorplan_file]
+    )
+    for svg_name in candidates:
+        name = os.path.basename(str(svg_name or ""))
+        if not name.endswith(".svg"):
+            continue
+        if "__" in name:
+            layout_name = name[:-4].split("__", 1)[1] + ".json"
+        elif "_floorplan" in name and not name.startswith("saved_"):
+            layout_name = name.replace("_floorplan", "_layout", 1)[:-4] + ".json"
+        else:
+            continue
+        layout_path = os.path.join(GENERATED_DIR, os.path.basename(layout_name))
+        if not os.path.isfile(layout_path):
+            continue
+        try:
+            layout = json.loads(Path(layout_path).read_text(encoding="utf-8"))
+            with floorplan_generation_lock:
+                scene = floorplan_3d.build_scene(layout)
+        except Exception as exc:
+            print(f"[saved-design-3d] 3D 데이터 생성 실패: {exc}")
+            continue
+        if scene.get("objects"):
+            return scene
+    return None
 
 
 @app.route(
@@ -5430,8 +5471,19 @@ def save_design():
                     modified_svg
                 )
             )
+            # 3D를 따로 저장하지 않는다. 그때의 최종 배치 파일 이름을 파일명에 넣어 두면
+            # 저장 디자인 화면이 그 배치로 3D를 다시 그린다(배치 파일은 고칠 때마다 새로
+            # 만들어져 나중에 바뀌지 않는다)
+            final_layout_path, _ = resolve_final_layout_path()
+            layout_stem = (
+                Path(final_layout_path).stem
+                if final_layout_path and os.path.isfile(final_layout_path)
+                else ""
+            )
             modified_floorplan_file = (
-                "saved_modified_floorplan_"
+                f"saved_{uuid.uuid4().hex[:12]}__{layout_stem}.svg"
+                if layout_stem
+                else "saved_modified_floorplan_"
                 f"{uuid.uuid4().hex[:16]}.svg"
             )
             (

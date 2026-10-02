@@ -159,9 +159,12 @@
         id="floorplan3dBox"
         class="d-none border mb-2"
         style="height: 460px; border-radius: 14px; overflow: hidden;"
+        {# 저장 디자인(읽기 전용)은 보기만 한다. 편집 주소를 주면 지금 세션의 배치를 고치게 된다 #}
+        {% if not readonly %}
         data-edit-url="{{ url_for('edit_scene') }}"
         data-parts-url="{{ url_for('scene_object_parts') }}"
         data-views-url="{{ url_for('scene_object_views') }}"
+        {% endif %}
         data-edit-context="final"
         data-box2d="modifiedPlanCard"
       ></div>
