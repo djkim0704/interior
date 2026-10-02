@@ -759,6 +759,32 @@ function viewTexture(url) {
   return VIEW_TEXTURES.get(url);
 }
 
+// AI 그림을 그리지 않는 종류(gemini_furniture_parts.SKIP_TYPES와 같게 유지).
+// 방 구조에 가까워 기본 모양으로 그린다
+const NO_ART_TYPES = new Set(["door", "window", "rug", "mirror", "curtain", "aircon"]);
+
+// 그림을 기다리는 가구의 바닥 자리. 모형을 미리 세우면 그림과 모양이 달라 보여서
+// 위치와 크기만 알 수 있게 바닥에 판을 깐다
+function makePlaceholder(obj, failed) {
+  const group = new THREE.Group();
+  const color = failed ? 0xb04a3a : 0x8a7a6a;
+  const plate = new THREE.Mesh(
+    new THREE.PlaneGeometry(obj.w_m, obj.d_m),
+    new THREE.MeshBasicMaterial({ color, transparent: true, opacity: failed ? 0.22 : 0.14, depthWrite: false })
+  );
+  plate.rotation.x = -Math.PI / 2;
+  plate.position.y = 0.006;
+  group.add(plate);
+  const edge = new THREE.LineSegments(
+    new THREE.EdgesGeometry(new THREE.PlaneGeometry(obj.w_m, obj.d_m)),
+    new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.8 })
+  );
+  edge.rotation.x = -Math.PI / 2;
+  edge.position.y = 0.008;
+  group.add(edge);
+  return group;
+}
+
 function makeArtBoard(obj, views) {
   const material = new THREE.MeshBasicMaterial({
     map: viewTexture(views.views.front),
@@ -956,7 +982,9 @@ class Floorplan3D {
     this.labelGroup = new THREE.Group();
     this.artGroup = new THREE.Group();
     this.artBoards = [];
-    this.showArt = this.data.view_mode !== "model";
+    // views_state: "on" 그림을 기다린다 / "off" 그림 기능이 꺼져 기본 모양으로 그린다
+    this.awaitArt = this.data.views_state === "on";
+    const failedViews = new Set(this.data.views_failed || []);
 
     this.data.objects.forEach((obj) => {
       // 설계도가 있으면 그것으로, 없으면 손으로 짠 빌더로 세운다.
@@ -995,8 +1023,15 @@ class Floorplan3D {
       wrapper.add(node);
       // AI 입체 그림이 있으면 모형 대신 그림을 보여 준다. 모형은 숨기되 남겨서
       // 마우스 판정(고르기·끌기)과 바닥 그림자 계산에 쓴다
-      const views = this.showArt ? (this.data.object_views || {})[obj.id] : null;
-      if (views && views.views && views.views.front && !obj.wall_mounted) {
+      const views = (this.data.object_views || {})[obj.id];
+      const wantsArt = this.awaitArt && !obj.wall_mounted && !NO_ART_TYPES.has(obj.type);
+      let artState = "";
+      if (wantsArt && !(views && views.views && views.views.front)) {
+        // 기본 모양은 보여 주지 않는다. 숨긴 모형은 고르기·끌기 판정에만 쓴다
+        node.visible = false;
+        artState = failedViews.has(obj.id) ? "failed" : "drawing";
+        wrapper.add(makePlaceholder(obj, artState === "failed"));
+      } else if (views && views.views && views.views.front && !obj.wall_mounted) {
         node.visible = false;
         const shadow = new THREE.Mesh(
           new THREE.CircleGeometry(0.5, 32),
@@ -1017,11 +1052,14 @@ class Floorplan3D {
       this.furnitureGroup.add(wrapper);
       this.pickables.push(wrapper);
 
-      const labelText = obj.marker
+      const labelText = (obj.marker
         ? `${obj.label} #${obj.marker}`
-        : obj.label;
+        : obj.label)
+        + (artState === "drawing" ? " · 그리는 중" : artState === "failed" ? " · 그림 실패" : "");
       const label = makeLabel(labelText, { accent: Boolean(obj.is_product) });
-      label.position.set(x, obj.base_m + obj.height_m + 0.2, z);
+      // 자리 표시만 있을 때는 빈 공중에 뜨지 않게 바닥 가까이 둔다
+      const labelY = artState ? 0.35 : obj.base_m + obj.height_m + 0.2;
+      label.position.set(x, labelY, z);
       label.userData.object = obj;
       wrapper.userData.label = label;
       this.labelGroup.add(label);
@@ -1314,6 +1352,8 @@ function init() {
 
   let data = readScene();
   const status = document.getElementById("floorplan3dStatus");
+  // 그림을 받을 주소가 있으면 기본 모양 대신 자리 표시로 시작한다
+  if (data && host.dataset.viewsUrl && !data.views_state) data.views_state = "on";
 
   if (!data || !data.objects || !data.objects.length) {
     if (toggle) {
@@ -1422,8 +1462,11 @@ function init() {
     if (data && data.object_views && !next.object_views) {
       next.object_views = data.object_views;
     }
-    if (data && data.view_mode && !next.view_mode) {
-      next.view_mode = data.view_mode;
+    if (data && data.views_state && !next.views_state) {
+      next.views_state = data.views_state;
+    }
+    if (data && data.views_failed && !next.views_failed) {
+      next.views_failed = data.views_failed;
     }
     if (data && data.grid_hidden && next.grid_hidden === undefined) {
       next.grid_hidden = data.grid_hidden;
@@ -1590,7 +1633,8 @@ function init() {
   const viewsUrl = host.dataset.viewsUrl;
   let viewsBusy = false;
   async function loadViews() {
-    if (!viewsUrl || viewsBusy || !data) return;
+    // 꺼짐으로 바뀐 뒤 다시 세운 뷰어가 또 요청하면 끝없이 돈다
+    if (!viewsUrl || viewsBusy || !data || data.views_state === "off") return;
     const have = data.object_views || {};
     // 그림이 없거나 아직 네 방향이 다 안 그려진 가구가 있으면 요청한다
     const missing = (data.objects || []).filter(
@@ -1606,39 +1650,48 @@ function init() {
         body: JSON.stringify({ context: editContext }),
       });
       const result = await response.json();
+      if (result && result.enabled === false) {
+        // 그림 기능이 꺼져 있으면 아무것도 안 보이는 대신 기본 모양으로 그린다
+        viewsBusy = false;
+        if (status) status.textContent = "";
+        data = { ...data, views_state: "off" };
+        window.dispatchEvent(new CustomEvent("floorplan:scene-updated", { detail: data }));
+        return;
+      }
       const fresh = (result && result.views) || {};
+      const failedNow = (result && result.failed) || [];
+      const failedBefore = data.views_failed || [];
+      const failedChanged = failedNow.length !== failedBefore.length
+        || failedNow.some((id) => !failedBefore.includes(id));
       // 새 가구뿐 아니라 방향이 늘어난 가구도 반영한다(앞 그림 먼저, 나머지는 나중에)
       const count = (entry) => Object.keys((entry && entry.views) || {}).length;
       const added = Object.keys(fresh).filter((id) => !have[id] || count(fresh[id]) > count(have[id]));
-      if (added.length) {
-        data = { ...data, object_views: { ...have, ...fresh } };
+      if (added.length || failedChanged) {
+        data = { ...data, object_views: { ...have, ...fresh }, views_failed: failedNow };
         window.dispatchEvent(new CustomEvent("floorplan:scene-updated", { detail: data }));
       }
       if (status) {
         status.textContent = result && result.remaining
           ? `AI 입체 그림을 그리는 중… 남은 가구 ${result.remaining}개`
-          : "";
+          : failedNow.length
+            ? `가구 ${failedNow.length}개는 그림을 만들지 못했어요. 잠시 뒤 새로고침하면 다시 그립니다.`
+            : "";
       }
       viewsBusy = false;
-      // 남은 가구가 있고 이번에 하나라도 받았으면 이어서 그린다(실패만 반복되면 멈춘다)
-      if (result && result.remaining && added.length) loadViews();
+      // 남은 가구가 있으면 이어서 그린다. 실패한 가구는 서버가 한동안 다시 그리지 않으므로
+      // 실패만 늘어도 다음 가구로 넘어가고, 아무 변화가 없으면 멈춘다
+      if (result && result.remaining && (added.length || failedChanged)) loadViews();
     } catch (error) {
       viewsBusy = false;
       console.warn("[floorplan-3d] 입체 그림을 받지 못해 모형으로 표시합니다:", error);
+      // 그림을 받을 길이 없으면 빈 자리만 남기지 않고 기본 모양으로 그린다
+      if (status) status.textContent = "AI 그림을 받지 못해 기본 모양으로 표시합니다.";
+      data = { ...data, views_state: "off" };
+      window.dispatchEvent(new CustomEvent("floorplan:scene-updated", { detail: data }));
     }
   }
   window.addEventListener("floorplan:viewer-ready", loadViews);
 
-  const artButton = document.getElementById("floorplan3dArt");
-  if (artButton && viewsUrl) {
-    artButton.classList.remove("d-none");
-    artButton.addEventListener("click", () => {
-      const toModel = data.view_mode !== "model";
-      data = { ...data, view_mode: toModel ? "model" : "art" };
-      artButton.textContent = toModel ? "AI 그림으로 보기" : "입체 모형으로 보기";
-      window.dispatchEvent(new CustomEvent("floorplan:scene-updated", { detail: data }));
-    });
-  }
 
   // 전용 화면은 사용자가 누를 것도 없이 바로 3D를 보여준다
   if (autostart) show3d();

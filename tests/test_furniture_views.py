@@ -110,6 +110,22 @@ class GenerateViewsTests(unittest.TestCase):
         self.assertFalse(out["views"]["sofa_0"]["complete"])
         self.assertIn("front", out["views"]["sofa_0"]["views"])
 
+    def test_failed_objects_are_reported(self) -> None:
+        # 화면은 기본 모양 대신 자리 표시로 기다리므로, 앞 그림조차 없는 가구는 실패로 알려야 한다
+        client = _Client(fail_on=1)  # 앞 그림부터 실패
+        out = gfv.generate_object_views(_scene(), self.cache, room_photo=self.photo, client=client, model="img")
+        self.assertEqual((out["failed"], out["enabled"]), (["sofa_0"], True))
+        # 쉬는 동안 다시 불러도 그리지 않고 실패로 알린다(문은 그림 대상이 아니다)
+        out = gfv.generate_object_views(_scene(), self.cache, room_photo=self.photo, client=client, model="img")
+        self.assertEqual((out["failed"], len(client.models.calls)), (["sofa_0"], 1))
+
+    def test_disabled_is_reported(self) -> None:
+        from unittest import mock
+
+        with mock.patch.object(gfv, "enabled", return_value=False):
+            out = gfv.generate_object_views(_scene(), self.cache, room_photo=self.photo, client=_Client(), model="img")
+        self.assertFalse(out["enabled"])
+
     def test_single_view_mode(self) -> None:
         import os
         from unittest import mock

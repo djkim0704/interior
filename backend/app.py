@@ -2441,7 +2441,10 @@ def scene_object_views():
     이미지 생성은 가구당 여러 번 호출해 오래 걸린다. 한 번에 두 가구씩 그리고 남은
     수를 돌려주면, 화면이 남은 가구가 없을 때까지 다시 부른다.
     """
-    if "uploaded_file" not in session or not gemini_furniture_views.enabled():
+    # enabled=False 면 화면이 자리 표시 대신 기본 모양을 그린다
+    if not gemini_furniture_views.enabled():
+        return jsonify({"ok": True, "views": {}, "remaining": 0, "enabled": False})
+    if "uploaded_file" not in session:
         return jsonify({"ok": True, "views": {}, "remaining": 0})
     payload = request.get_json(silent=True) or {}
     context = "final" if payload.get("context") == "final" else "floorplan"

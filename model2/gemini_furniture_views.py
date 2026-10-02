@@ -338,7 +338,7 @@ def generate_object_views(
     없을 때까지 다시 부르며 그려진 가구부터 보여 준다.
     """
     if not enabled():
-        return {"views": {}, "remaining": 0}
+        return {"views": {}, "remaining": 0, "failed": [], "enabled": False}
     model = model or image_model()
     root = Path(cache_dir).resolve()
     out_dir = root / VIEWS_DIR
@@ -347,6 +347,17 @@ def generate_object_views(
     photo = Path(room_photo) if room_photo else None
     names = view_names()
     result: dict[str, Any] = {}
+    # 화면은 기본 모양 대신 자리 표시만 세우고 그림을 기다린다. 그림이 끝내 안 오는
+    # 가구를 알려 줘야 '그리는 중'으로 영영 남지 않고 실패로 표시된다
+    failed_ids: list[str] = []
+
+    def done(remaining: int) -> dict[str, Any]:
+        return {
+            "views": result,
+            "remaining": remaining,
+            "failed": [i for i in failed_ids if i not in result],
+            "enabled": True,
+        }
 
     def entry_for(key: str) -> dict[str, Any] | None:
         """있는 그림만 담는다. 앞 그림만 있어도 바로 보여 주고(나머지 방향은 앞 그림으로
@@ -378,6 +389,7 @@ def generate_object_views(
                 continue
         failed = out_dir / f"{key}.failed"
         if failed.is_file() and time.time() - failed.stat().st_mtime < FAILURE_COOLDOWN_SECONDS:
+            failed_ids.append(item["id"])
             continue
         item["key"] = key
         pending.append(item)
@@ -387,14 +399,15 @@ def generate_object_views(
         remaining = len(pending) - max_new
         pending = pending[:max_new]
     if not pending:
-        return {"views": result, "remaining": 0}
+        return done(0)
 
     with _LOCK:
         try:
             client = client or _client()
         except Exception as exc:
             print(f"[gemini-furniture-views] 클라이언트 생성 실패: {exc}")
-            return {"views": result, "remaining": 0}
+            failed_ids.extend(item["id"] for item in pending)
+            return done(0)
         for item in pending:
             key = item["key"]
             try:
@@ -446,8 +459,10 @@ def generate_object_views(
                 partial = entry_for(key)
                 if partial:
                     result[item["id"]] = partial
+                else:
+                    failed_ids.append(item["id"])
                 continue
             cached = entry_for(key)
             if cached:
                 result[item["id"]] = cached
-    return {"views": result, "remaining": remaining}
+    return done(remaining)
