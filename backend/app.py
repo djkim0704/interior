@@ -4199,6 +4199,7 @@ def search_products():
         # 고른 종류가 있으면 이 방에 실제로 맞는지 함께 보여 준다(항목 21).
         # 직접 검색은 무드 점수가 없으니 공간·크기만 합친다
         item_type = str(request.args.get("type") or "")
+        mood_scores = search_mood_scores(products, item_type)
         layout, replace_id = (
             fit_layout_and_target(request.args.get("replace_id"))
             if item_type in PURCHASE_LABELS
@@ -4212,12 +4213,20 @@ def search_products():
                 except Exception as fit_exc:
                     print(f"[search-products] 적합도 계산 실패: {fit_exc}")
                     continue
-                total = (
-                    spatial_fit.WEIGHTS["space"] * fit["space"]
-                    + spatial_fit.WEIGHTS["size"] * fit["size"]
-                ) / (spatial_fit.WEIGHTS["space"] + spatial_fit.WEIGHTS["size"])
+                mood = mood_scores.get(id(product))
+                if mood is None:
+                    total = (
+                        spatial_fit.WEIGHTS["space"] * fit["space"]
+                        + spatial_fit.WEIGHTS["size"] * fit["size"]
+                    ) / (spatial_fit.WEIGHTS["space"] + spatial_fit.WEIGHTS["size"])
+                else:
+                    total = (
+                        spatial_fit.WEIGHTS["mood"] * mood
+                        + spatial_fit.WEIGHTS["space"] * fit["space"]
+                        + spatial_fit.WEIGHTS["size"] * fit["size"]
+                    )
                 product["fit"] = {
-                    "mood": None,
+                    "mood": mood,
                     "space": fit["space"],
                     "size": fit["size"],
                     "total": round(total * (1 if fit["fits"] else 0.4), 3),
@@ -4709,8 +4718,9 @@ def recommendation_context():
         key: list(mood_analysis.get(key, []))
         for key in ("colors", "materials", "forms")
     }
+    # 무드 이미지를 고르지 않아도 CLIP을 쓴다(무드 문장↔상품 이미지)
     image_service = None
-    if selected_image_path and os.getenv("PRODUCT_CLIP_ENABLED", "1").strip().lower() not in {"0", "false", "off"}:
+    if os.getenv("PRODUCT_CLIP_ENABLED", "1").strip().lower() not in {"0", "false", "off"}:
         image_service = furniture_recommender.ClipImageSimilarityService(
             os.path.join(PRODUCT_CACHE_DIR, "clip_product_embeddings")
         )
@@ -4720,6 +4730,45 @@ def recommendation_context():
 def recommendation_provider():
     """테스트에서 바꿔 끼울 수 있게 함수로 둔다."""
     return furniture_recommender.SerpApiShoppingProvider()
+
+
+def search_mood_scores(products, item_type):
+    """직접 검색 결과에도 무드 적합도를 매긴다: 텍스트 스타일 + CLIP.
+
+    예전 검색(/search-products)은 SerpApi 결과를 그대로 보여 줘서 무드와 무관했다.
+    추천(/api/recommendations)과 같은 기준(무드 이미지 또는 무드 문장 CLIP)을 쓴다.
+    {id(product): 0..1}을 돌려준다. 계산할 수 없으면 빈 dict.
+    """
+    if not products:
+        return {}
+    try:
+        mood_analysis, observed, selected_image_path, image_service = recommendation_context()
+    except Exception as exc:
+        print(f"[search-products] 무드 정보를 만들지 못했습니다: {exc}")
+        return {}
+    mood_scores = mood_analysis.get("mood_scores", {})
+    text_scores = furniture_recommender.normalize_scores(
+        [
+            furniture_recommender.calculate_text_style_score(product, observed, mood_scores)
+            for product in products
+        ]
+    )
+    mood_text = (
+        furniture_recommender.mood_clip_text(item_type, mood_scores)
+        if item_type
+        else None
+    )
+    result = {}
+    for product, text_score in zip(products, text_scores):
+        clip = None
+        if image_service is not None and product.get("image"):
+            if selected_image_path:
+                clip = image_service.similarity(selected_image_path, str(product["image"]))
+            elif mood_text:
+                clip = image_service.text_similarity(mood_text, str(product["image"]))
+        score = text_score if clip is None else 0.6 * clip + 0.4 * text_score
+        result[id(product)] = round(float(score), 3)
+    return result
 
 
 def public_product(item):
@@ -4759,6 +4808,10 @@ def api_recommendations():
             provider=recommendation_provider(),
             image_similarity_service=image_service,
             spatial_scorer=scorer,
+            mood_text=furniture_recommender.mood_clip_text(
+                category,
+                mood_analysis.get("mood_scores", {}),
+            ),
         )
     except Exception as exc:
         print(f"[recommendations] 실패: {exc}")

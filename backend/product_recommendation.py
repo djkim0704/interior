@@ -84,13 +84,25 @@ class ImageSimilarityService(Protocol):
 
 
 class ClipImageSimilarityService:
-    """Reuse the project's CLIP encoder with URL-keyed disk embeddings."""
+    """Reuse the project's CLIP encoder with URL-keyed disk embeddings.
+
+    기준은 두 가지다. 사용자가 고른 무드 이미지가 있으면 이미지↔상품 이미지 유사도,
+    없으면 무드 문장(예: "warm cozy style sofa")↔상품 이미지 유사도를 쓴다. 예전에는
+    무드 이미지를 고르지 않으면 CLIP이 아예 꺼졌다.
+
+    상품 썸네일 하나를 못 받았다고 CLIP 전체를 끄지 않는다. Google Shopping 썸네일은
+    연속으로 받으면 가끔 막히는데, 예전에는 한 장만 실패해도 그 요청의 나머지 상품이
+    모두 CLIP 없이 정렬됐다. 연속 실패가 MAX_CONSECUTIVE_FAILURES번일 때만 끈다.
+    """
+
+    MAX_CONSECUTIVE_FAILURES = 5
 
     def __init__(self, cache_dir: str | Path) -> None:
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self._reference_cache: dict[str, Any] = {}
         self._disabled = False
+        self._failures = 0
 
     def _encode_path(self, path: Path) -> Any:
         from mood_search_v1 import search as mood_search
@@ -103,47 +115,107 @@ class ClipImageSimilarityService:
             device,
         )[0]
 
+    def _encode_text(self, text: str) -> Any:
+        from mood_search_v1 import search as mood_search
+
+        return mood_search._encode_prompt(text)
+
+    def _product_embedding(self, product_image_url: str) -> Any:
+        import numpy as np
+
+        image_key = hashlib.sha256(product_image_url.encode("utf-8")).hexdigest()[:24]
+        embedding_path = self.cache_dir / f"{image_key}.npy"
+        image_path = self.cache_dir / f"{image_key}.img"
+        if embedding_path.exists():
+            return np.load(embedding_path)
+        if not image_path.exists():
+            with requests.Session() as http:
+                http.trust_env = False
+                response = http.get(product_image_url, timeout=12)
+                response.raise_for_status()
+            image_path.write_bytes(response.content)
+        embedding = self._encode_path(image_path)
+        np.save(embedding_path, embedding)
+        return embedding
+
+    def _guarded(self, compute: Any) -> float | None:
+        if self._disabled:
+            return None
+        try:
+            value = compute()
+            self._failures = 0
+            return value
+        except Exception as exc:
+            self._failures += 1
+            LOGGER.warning("clip_item_failed failures=%d error=%s", self._failures, exc)
+            if self._failures >= self.MAX_CONSECUTIVE_FAILURES:
+                self._disabled = True
+                LOGGER.warning("clip_disabled_after_consecutive_failures")
+            return None
+
     def similarity(
         self,
         reference_image: str | Path,
         product_image_url: str,
     ) -> float | None:
-        """Return CLIP cosine similarity, caching each product embedding."""
-        import numpy as np
-
-        if self._disabled:
-            return None
+        """Return CLIP image-image similarity mapped to 0..1."""
         reference_path = Path(reference_image)
         if not reference_path.is_file() or not product_image_url:
             return None
-        reference_key = str(reference_path.resolve())
-        try:
+
+        def compute() -> float:
+            reference_key = str(reference_path.resolve())
             reference_embedding = self._reference_cache.get(reference_key)
             if reference_embedding is None:
                 reference_embedding = self._encode_path(reference_path)
                 self._reference_cache[reference_key] = reference_embedding
-
-            image_key = hashlib.sha256(product_image_url.encode("utf-8")).hexdigest()[:24]
-            embedding_path = self.cache_dir / f"{image_key}.npy"
-            image_path = self.cache_dir / f"{image_key}.img"
-            if embedding_path.exists():
-                product_embedding = np.load(embedding_path)
-            else:
-                if not image_path.exists():
-                    with requests.Session() as http:
-                        http.trust_env = False
-                        response = http.get(product_image_url, timeout=12)
-                        response.raise_for_status()
-                    image_path.write_bytes(response.content)
-                product_embedding = self._encode_path(image_path)
-                np.save(embedding_path, product_embedding)
-            similarity = float(product_embedding @ reference_embedding)
+            similarity = float(self._product_embedding(product_image_url) @ reference_embedding)
             # CLIP cosine can be negative; recommendation weights expect 0..1.
             return max(0.0, min(1.0, (similarity + 1.0) / 2.0))
-        except Exception as exc:
-            self._disabled = True
-            LOGGER.warning("clip_disabled_after_failure error=%s", exc)
+
+        return self._guarded(compute)
+
+    def text_similarity(self, text: str, product_image_url: str) -> float | None:
+        """무드 문장↔상품 이미지 유사도(0..1).
+
+        CLIP의 문장↔이미지 코사인은 이미지↔이미지보다 훨씬 좁은 범위(대략 0.15~0.35)에
+        몰린다. 그대로 쓰면 모든 상품이 비슷한 점수가 되므로 그 범위를 0..1로 펼친다.
+        """
+        if not text or not product_image_url:
             return None
+
+        def compute() -> float:
+            key = "text:" + text
+            reference_embedding = self._reference_cache.get(key)
+            if reference_embedding is None:
+                reference_embedding = self._encode_text(text)
+                self._reference_cache[key] = reference_embedding
+            similarity = float(self._product_embedding(product_image_url) @ reference_embedding)
+            return max(0.0, min(1.0, (similarity - 0.15) / 0.20))
+
+        return self._guarded(compute)
+
+
+def mood_clip_text(category: str, mood_scores: dict[str, float]) -> str:
+    """CLIP에 줄 영어 무드 문장. 무드 이미지를 고르지 않았을 때의 기준이다.
+
+    CLIP은 영어로 학습돼서 한국어 무드 이름보다 영어 표현이 훨씬 잘 맞는다.
+    무드 별칭과 카테고리 별칭에 있는 영어 표현을 쓴다.
+    """
+    category = normalize_category(category)
+    noun = next(
+        (alias for alias, mapped in CATEGORY_ALIASES.items() if mapped == category and alias.isascii()),
+        "furniture",
+    ).replace("_", " ")
+    ranked = sorted(mood_scores.items(), key=lambda kv: -float(kv[1]))[:2]
+    words: list[str] = []
+    for mood, _ in ranked:
+        for alias in MOOD_ALIASES.get(mood, ()):
+            if alias.isascii() and alias not in words:
+                words.append(alias)
+                break
+    style = " and ".join(words) or "modern"
+    return f"a {style} style {noun}, interior furniture product photo"
 
 
 class _SerpApiError(ValueError):
@@ -1139,6 +1211,7 @@ def recommend_furniture(
     final_limit: int = FINAL_RECOMMENDATION_COUNT,
     spatial_scorer: Any = None,
     spatial_top_n: int = 15,
+    mood_text: str | None = None,
 ) -> tuple[list[dict[str, Any]], set[str], list[str]]:
     """Run candidate collection, filtering, scoring and diverse selection.
 
@@ -1233,14 +1306,21 @@ def recommend_furniture(
         if (
             index in image_candidate_indexes
             and image_similarity_service
-            and selected_image
+            and (selected_image or mood_text)
             and item.get("image")
         ):
             try:
-                image_score = image_similarity_service.similarity(
-                    selected_image,
-                    str(item["image"]),
-                )
+                if selected_image:
+                    image_score = image_similarity_service.similarity(
+                        selected_image,
+                        str(item["image"]),
+                    )
+                elif hasattr(image_similarity_service, "text_similarity"):
+                    # 무드 이미지를 고르지 않았으면 무드 문장으로 CLIP을 쓴다
+                    image_score = image_similarity_service.text_similarity(
+                        mood_text,
+                        str(item["image"]),
+                    )
             except Exception as exc:
                 LOGGER.warning("image_similarity_failed url=%r error=%s", item.get("image"), exc)
         item["_image_similarity"] = image_score
