@@ -148,6 +148,11 @@ def generate_product_icon_svg(
         ).strip()
         if fallback_model and fallback_model not in candidate_models:
             candidate_models.append(fallback_model)
+    # .env에 적은 모델이 없어졌거나(404) 막혀도 바로 로컬 아이콘으로 떨어지지 않게,
+    # 종류별 기본 모델로 한 번 더 시도한다
+    default_model = resolve_icon_model(normalized_category, None)
+    if default_model and default_model not in candidate_models:
+        candidate_models.append(default_model)
 
     failures: list[str] = []
     for candidate_model in candidate_models:
