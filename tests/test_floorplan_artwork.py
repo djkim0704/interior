@@ -161,5 +161,31 @@ class GenerateTests(unittest.TestCase):
         self.assertEqual(client.models.calls, 1)
 
 
+class RoomStyleTests(unittest.TestCase):
+    def test_floor_pattern_and_colors_reach_3d(self) -> None:
+        reply = GEMINI_REPLY.replace(
+            '<pattern id="floor-pattern" width="40" height="40" patternUnits="userSpaceOnUse"><rect width="40" height="40" fill="#e6d3b8"/></pattern>',
+            '<linearGradient id="grain"><stop offset="0" stop-color="#c9a77c"/></linearGradient>'
+            '<pattern id="floor-pattern" width="40" height="40" patternUnits="userSpaceOnUse"><rect width="40" height="40" fill="url(#grain)"/></pattern>',
+        )
+        art = artwork_mod.parse_artwork(reply, ["bed_1", "desk_1"])
+        style = artwork_mod.room_style(art)
+        self.assertEqual((style["floor_color"], style["wall_color"]), ("#e6d3b8", "#9a8676"))
+        self.assertEqual(style["floor_pattern_id"], "gx-floor-pattern")
+        # 무늬가 참조하는 정의(나뭇결 그라데이션)까지 함께 담는다. 쓰지 않는 정의(이불)는 뺀다
+        self.assertIn('id="gx-grain"', style["floor_pattern_svg"])
+        self.assertNotIn("gx-quilt", style["floor_pattern_svg"])
+        graph = _graph()
+        graph["room"]["art_style"] = style
+        room = build_scene(graph)["room"]
+        self.assertEqual((room["floor_color"], room["wall_color"]), ("#e6d3b8", "#9a8676"))
+        self.assertEqual(room["floor_pattern_id"], "gx-floor-pattern")
+
+    def test_without_artwork_3d_keeps_analysis_colors(self) -> None:
+        room = build_scene(_graph())["room"]
+        self.assertIsNone(room["floor_pattern_svg"])
+        self.assertTrue(room["floor_color"].startswith("#"))
+
+
 if __name__ == "__main__":
     unittest.main()

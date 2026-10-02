@@ -22,7 +22,7 @@ from .gemini_retry import call_with_retry
 from .gemini_telemetry import instrument
 from . import scene_graph
 from .scene_render_2d import render_svg as render_scene_graph_svg
-from .gemini_floorplan_artwork import generate_artwork
+from .gemini_floorplan_artwork import generate_artwork, room_style
 from . import product_attributes
 from . import product_dimensions
 from .gemini_svg_experiment import _extract_svg, generate_svg_text
@@ -1702,6 +1702,9 @@ def _finish_with_scene_graph(
                 encoding="utf-8",
             )
             graph["artwork_file"] = artwork_path.name
+            # 3D 바닥·벽도 2D 그림과 같은 색·무늬로 칠하도록 방 정보에 남긴다.
+            # 방 정보는 편집·상품 추가로 만든 배치에도 그대로 따라간다
+            graph["room"]["art_style"] = room_style(artwork)
     layout_path.write_text(
         json.dumps(graph, ensure_ascii=False, indent=2),
         encoding="utf-8",

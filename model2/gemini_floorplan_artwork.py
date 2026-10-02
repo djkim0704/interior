@@ -197,6 +197,47 @@ def parse_artwork(svg_text: str, expected_ids: list[str]) -> dict[str, Any]:
     }
 
 
+def room_style(artwork: dict[str, Any] | None) -> dict[str, Any]:
+    """2D 그림의 바닥색·벽색·바닥 무늬. 3D 바닥과 벽을 2D와 같게 칠하는 데 쓴다.
+
+    바닥 무늬는 <pattern id="gx-floor-pattern">과 그 무늬가 참조하는 정의만 떼어 낸
+    SVG 조각이다. 브라우저가 이걸 이미지로 그려 3D 바닥에 타일처럼 깐다.
+    """
+    if not artwork:
+        return {}
+    style: dict[str, Any] = {}
+    room = artwork.get("room") or {}
+    for key in ("floor_color", "wall_color"):
+        value = str(room.get(key) or "")
+        if re.fullmatch(r"#[0-9a-fA-F]{6}", value):
+            style[key] = value.lower()
+    pattern_id = artwork.get("floor_pattern_id")
+    defs = str(artwork.get("defs") or "")
+    if pattern_id and defs:
+        try:
+            root = ET.fromstring(f'<defs xmlns="{SVG_NS}">{defs}</defs>')
+        except ET.ParseError:
+            root = None
+        if root is not None:
+            by_id = {child.get("id"): child for child in list(root) if child.get("id")}
+            wanted = [pattern_id]
+            keep: list[str] = []
+            seen: set[str] = set()
+            while wanted:
+                current = wanted.pop()
+                if current in seen or current not in by_id:
+                    continue
+                seen.add(current)
+                text = ET.tostring(by_id[current], encoding="unicode")
+                keep.append(text)
+                wanted.extend(re.findall(r"url\(#([^)]+)\)", text))
+            markup = "".join(keep).replace(f' xmlns:ns0="{SVG_NS}"', "").replace("ns0:", "").replace(f' xmlns="{SVG_NS}"', "")
+            if markup and len(markup) < 20000:
+                style["floor_pattern_svg"] = markup
+                style["floor_pattern_id"] = pattern_id
+    return style
+
+
 def generate_artwork(
     client: Any,
     image_path: Path,

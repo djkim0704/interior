@@ -377,8 +377,12 @@ def build_scene_from_graph(
         ),
         "estimated": bool(room_in.get("estimated")),
         "scale_source": room_in.get("scale_source"),
-        "floor_color": str(room_in.get("floor_color") or DEFAULT_FLOOR_COLOR),
-        "wall_color": str(room_in.get("wall_color") or DEFAULT_WALL_COLOR),
+        # 2D 그림(Gemini)의 바닥·벽 색이 있으면 그걸 쓴다. 분석 색과 다르면 2D와 3D가
+        # 다른 방처럼 보이기 때문이다
+        "floor_color": str((room_in.get("art_style") or {}).get("floor_color") or room_in.get("floor_color") or DEFAULT_FLOOR_COLOR),
+        "wall_color": str((room_in.get("art_style") or {}).get("wall_color") or room_in.get("wall_color") or DEFAULT_WALL_COLOR),
+        "floor_pattern_svg": (room_in.get("art_style") or {}).get("floor_pattern_svg"),
+        "floor_pattern_id": (room_in.get("art_style") or {}).get("floor_pattern_id"),
     }
     return {
         "room": room,

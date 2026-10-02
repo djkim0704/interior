@@ -712,6 +712,38 @@ function buildFromParts(obj, parts) {
   return g;
 }
 
+// ── 바닥 무늬 ─────────────────────────────────────────
+// 2D 그림의 SVG <pattern>을 브라우저가 이미지로 그리게 한 뒤 캔버스 텍스처로 쓴다.
+// API를 부르지 않고 2D와 같은 바닥을 3D에 깐다.
+const FLOOR_TEXTURES = new Map();
+function floorPatternTexture(patternSvg, patternId, onReady) {
+  const key = patternId + ":" + patternSvg.length;
+  if (FLOOR_TEXTURES.has(key)) {
+    onReady(FLOOR_TEXTURES.get(key));
+    return;
+  }
+  const size = 512;
+  const svg =
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 240 240">` +
+    `<defs>${patternSvg}</defs><rect width="240" height="240" fill="url(#${patternId})"/></svg>`;
+  const image = new Image();
+  image.onload = () => {
+    const canvas = document.createElement("canvas");
+    canvas.width = size;
+    canvas.height = size;
+    canvas.getContext("2d").drawImage(image, 0, 0, size, size);
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.wrapS = THREE.RepeatWrapping;
+    texture.wrapT = THREE.RepeatWrapping;
+    texture.colorSpace = THREE.SRGBColorSpace;
+    texture.anisotropy = 4;
+    FLOOR_TEXTURES.set(key, texture);
+    onReady(texture);
+  };
+  image.onerror = () => console.warn("[floorplan-3d] 바닥 무늬를 그리지 못해 단색으로 표시합니다");
+  image.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg);
+}
+
 // ── AI 입체 그림 배치 ───────────────────────────────────
 // 가구마다 이미지 모델이 그린 4방향 입체 그림(앞·오른쪽·뒤·왼쪽)을 받아, 가구 자리에
 // 세운 판에 붙인다. 판은 카메라 쪽으로 몸을 돌리고, 카메라가 가구의 어느 쪽에 있는지에
@@ -868,13 +900,23 @@ class Floorplan3D {
       this.data.room;
 
     // 바닥
-    const floor = new THREE.Mesh(
-      new THREE.PlaneGeometry(w, d),
-      new THREE.MeshStandardMaterial({ color: floor_color, roughness: 0.85 })
-    );
+    const floorMaterial = new THREE.MeshStandardMaterial({ color: floor_color, roughness: 0.85 });
+    const floor = new THREE.Mesh(new THREE.PlaneGeometry(w, d), floorMaterial);
     floor.rotation.x = -Math.PI / 2;
     floor.receiveShadow = true;
     this.scene.add(floor);
+    // 2D 그림의 바닥 무늬(원목·타일)가 있으면 이미지로 그려 바닥에 타일처럼 깐다
+    const { floor_pattern_svg: patternSvg, floor_pattern_id: patternId } = this.data.room;
+    if (patternSvg && patternId) {
+      floorPatternTexture(patternSvg, patternId, (texture) => {
+        if (this.disposed) return;
+        // 무늬 한 장이 실제 바닥 1.2m를 덮도록 반복한다
+        texture.repeat.set(w / 1.2, d / 1.2);
+        floorMaterial.map = texture;
+        floorMaterial.color.set("#ffffff");
+        floorMaterial.needsUpdate = true;
+      });
+    }
 
     // 1m 격자 — 배치 확인의 핵심 단서라 항상 켜둔다
     const grid = new THREE.GridHelper(
@@ -887,6 +929,7 @@ class Floorplan3D {
     grid.material.transparent = true;
     grid.material.opacity = 0.55;
     this.scene.add(grid);
+    this.grid = grid;
 
     // 벽 4면 — 안쪽만 보이게 BackSide 로 세운다(카메라가 밖에 있으면 투시됨)
     const wallMat = new THREE.MeshStandardMaterial({
@@ -1005,6 +1048,12 @@ class Floorplan3D {
     }
     this.viewMode = mode;
     this.controls.update();
+  }
+
+  toggleGrid() {
+    if (!this.grid) return false;
+    this.grid.visible = !this.grid.visible;
+    return this.grid.visible;
   }
 
   toggleLabels() {
@@ -1376,6 +1425,9 @@ function init() {
     if (data && data.view_mode && !next.view_mode) {
       next.view_mode = data.view_mode;
     }
+    if (data && data.grid_hidden && next.grid_hidden === undefined) {
+      next.grid_hidden = data.grid_hidden;
+    }
     data = next;
     const visible = !host.classList.contains("d-none");
     let camera = null;
@@ -1567,6 +1619,22 @@ function init() {
 
   // 전용 화면은 사용자가 누를 것도 없이 바로 3D를 보여준다
   if (autostart) show3d();
+
+  // 1m 격자: 배치 확인용이라 기본으로 켜 두고, 배경을 깔끔하게 보고 싶으면 끈다
+  const gridButton = document.getElementById("floorplan3dGrid");
+  if (gridButton) {
+    gridButton.addEventListener("click", () => {
+      if (!viewer) return;
+      const visible = viewer.toggleGrid();
+      data = { ...data, grid_hidden: !visible };
+      gridButton.classList.toggle("active", visible);
+      gridButton.textContent = visible ? "격자 숨기기" : "격자 표시";
+    });
+  }
+  // 다시 세운 뷰어에도 격자 선택을 유지한다
+  window.addEventListener("floorplan:viewer-ready", () => {
+    if (viewer && data && data.grid_hidden && viewer.grid) viewer.grid.visible = false;
+  });
 
   const labelButton = document.getElementById("floorplan3dLabels");
   if (labelButton) {
