@@ -333,6 +333,9 @@ venv\Scripts\python.exe -m py_compile backend/app.py   # 저장 직후 확인
   `elevation_m`, `room.ceiling_height_m`). 빠진 가구는 같은 방 가구의 '높이 ÷ 긴 변' 비율로
   채운다(`scene_graph.fill_missing_heights`, `h_source`에 근거). 천장은 분석값, 없으면 가장
   높이 닿는 객체(`ceiling_from_objects`).
+- **높이 보정:** 2D 그림 요청이 가구 이름·종류·사진을 보고 실제 높이를 `<g data-height-m>`로 다시
+  적는다(`ARTWORK_VERSION` 3). 이 값이 있으면 분석값보다 우선한다(`apply_artwork_heights`,
+  `h_source="svg"`). 비율로 채운 높이는 근거가 약해 요청에 "unknown"으로 넘긴다.
 - **상품 치수:** 제목 → 설명 → 상품 페이지 → 사진 속 치수표 → Gemini 추정
   (`product_attributes`의 `estimated_dimensions_cm`, `dimension_source="ai_estimate"`). 모두
   없으면 `resolve()`가 None이고, 상품 추가는 400으로 막는다(교체는 원래 가구 크기를 물려받음).

@@ -91,6 +91,39 @@ class ObjectSolidTests(unittest.TestCase):
         self.assertNotIn("data-only3d", svg)
 
 
+class ArtworkHeightTests(unittest.TestCase):
+    """그림 요청이 가구 이름·사진으로 판단한 높이를 3D 높이로 쓴다."""
+
+    def test_height_is_parsed_and_applied(self) -> None:
+        from model2.web_floorplan import apply_artwork_heights
+
+        text = (
+            '<svg xmlns="http://www.w3.org/2000/svg"><defs></defs>'
+            '<g id="rug_1" data-w="200" data-h="180" data-height-m="0.015"><rect width="200" height="180" fill="#a33"/></g>'
+            '<g id="sofa_1" data-w="200" data-h="90" data-height-m="99"><rect width="200" height="90" fill="#333"/></g></svg>'
+        )
+        art = parse_artwork(text, ["rug_1", "sofa_1"])
+        self.assertEqual(art["objects"]["rug_1"]["height_m"], 0.015)
+        self.assertIsNone(art["objects"]["sofa_1"]["height_m"])  # 범위 밖 값은 버린다
+        graph = {"objects": [
+            {"id": "rug_1", "h_m": 1.41, "h_source": "room_ratio"},
+            {"id": "sofa_1", "h_m": 0.8},
+        ]}
+        apply_artwork_heights(graph, art)
+        self.assertEqual((graph["objects"][0]["h_m"], graph["objects"][0]["h_source"]), (0.015, "svg"))
+        self.assertEqual(graph["objects"][1]["h_m"], 0.8)
+
+    def test_weak_height_is_sent_as_unknown(self) -> None:
+        from model2.gemini_floorplan_artwork import _prompt
+
+        prompt = _prompt({"objects": [
+            {"id": "rug_1", "type": "rug", "label": "러그", "w_m": 2.0, "d_m": 1.8, "h_m": 1.41, "h_source": "room_ratio"},
+            {"id": "sofa_1", "type": "sofa", "label": "소파", "w_m": 2.0, "d_m": 0.9, "h_m": 0.8},
+        ]})
+        self.assertIn("rug_1 | rug | 러그 | 240 x 216 | unknown", prompt)
+        self.assertIn("| 0.80 m |", prompt)
+
+
 class ArtworkParseTests(unittest.TestCase):
     def test_height_attributes_survive_parsing(self) -> None:
         text = (

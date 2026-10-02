@@ -1695,6 +1695,20 @@ def load_artwork(layout: dict[str, Any], base_dir: str | Path) -> dict[str, Any]
         return None
 
 
+def apply_artwork_heights(graph: dict[str, Any], artwork: dict[str, Any]) -> None:
+    """그림을 그린 Gemini가 가구 이름·사진으로 판단한 높이(data-height-m)를 쓴다.
+
+    공간 분석은 방 전체를 한 번에 보느라 높이를 빠뜨리거나(러그) 틀린다. 그림 요청은
+    가구 하나하나를 이름과 함께 보므로 그 값을 우선한다. 같은 호출이라 비용은 그대로다.
+    """
+    drawn = artwork.get("objects") or {}
+    for obj in graph.get("objects") or []:
+        height = (drawn.get(str(obj.get("id"))) or {}).get("height_m")
+        if height:
+            obj["h_m"] = float(height)
+            obj["h_source"] = "svg"
+
+
 def render_floorplan_svg(layout: dict[str, Any], base_dir: str | Path) -> str:
     """Scene Graph + (있으면) Gemini 가구 그림 → 평면도 SVG. 편집 저장 후 재렌더에도 쓴다."""
     return render_scene_graph_svg(layout, artwork=load_artwork(layout, base_dir))
@@ -1742,6 +1756,7 @@ def _finish_with_scene_graph(
             # 3D 바닥·벽도 2D 그림과 같은 색·무늬로 칠하도록 방 정보에 남긴다.
             # 방 정보는 편집·상품 추가로 만든 배치에도 그대로 따라간다
             graph["room"]["art_style"] = room_style(artwork)
+            apply_artwork_heights(graph, artwork)
     layout_path.write_text(
         json.dumps(graph, ensure_ascii=False, indent=2),
         encoding="utf-8",

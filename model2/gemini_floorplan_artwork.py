@@ -29,7 +29,7 @@ from google.genai import types
 from .gemini_svg_experiment import _ensure_not_truncated, _extract_svg, _image_part, minimal_thinking
 
 # 2: 3D로 세우기 위한 도형별 높이 정보(data-z0 등)를 함께 받는다
-ARTWORK_VERSION = "2"
+ARTWORK_VERSION = "3"  # 3: 가구 이름·사진으로 판단한 실제 높이(data-height-m)도 받는다
 FAILURE_COOLDOWN_SECONDS = 10 * 60
 SVG_NS = "http://www.w3.org/2000/svg"
 # 그림 조각 크기(px). 가구 실측 비율을 유지하되 긴 변을 이 정도로 맞춰 그리게 한다.
@@ -78,6 +78,15 @@ The target style is a warm hand-drawn architectural interior illustration:
   preserves each object's real color, material and distinctive pattern from
   the photograph.
 - Do NOT fake volume with a large offset copy of the silhouette.
+- Use the Korean name and kind together with the photo to get each object's
+  form right, even where the photo is unclear or partly hidden (a "원형 식탁"
+  is round, a "좌식 테이블" is a low floor table, a rug is a flat textile).
+
+Real height: on every object <g>, set data-height-m to the object's real total
+height in metres (floor to its highest point; for wall-mounted things, their
+own height), judged from its name, kind and the photo. The listed height is a
+rough estimate from an earlier pass and may be missing ("unknown") or wrong:
+correct it. Flat things such as rugs and mats are only a few centimetres high.
 
 Each object has its own local drawing box, given as W x H pixels:
 - Draw the object inside x from 0 to W and y from 0 to H, filling the box.
@@ -94,7 +103,7 @@ Return ONLY one SVG document, no Markdown, structured exactly like this:
          id="floor-pattern" (light wood planks or tile matching the photo) -->
   </defs>
   <g id="room-style" data-floor-color="#d9c3a5" data-wall-color="#8a7766"/>
-  <g id="OBJECT_ID" data-w="W" data-h="H"> ...object artwork... </g>
+  <g id="OBJECT_ID" data-w="W" data-h="H" data-height-m="0.75"> ...object artwork... </g>
   ... one <g> per listed object, id exactly as given ...
 </svg>
 
@@ -104,7 +113,7 @@ Technical requirements:
 - Prefer compact paths, reusable gradients and patterns. Keep the whole
   document under 12,000 output tokens.
 
-OBJECTS (id, kind, Korean name, W x H, total height, color / material / pattern hints):
+OBJECTS (id, kind, Korean name, W x H, estimated height, color / material / pattern hints):
 """.strip().replace("{solid_hints}", SOLID_HINTS)
 
 
@@ -144,9 +153,12 @@ def cache_key(image_path: Path, graph: dict[str, Any], model: str) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:24]
 
 
-def _height_m(obj: dict[str, Any]) -> float:
-    """3D에서 쓰는 높이와 같은 값(공간 분석이 사진에서 추정한 h_m)을 알려 준다."""
-    return float(obj.get("h_m") or 0.0)
+def _height_hint(obj: dict[str, Any]) -> str:
+    """공간 분석이 사진에서 추정한 높이. 같은 방 비율로 채운 값은 근거가 약해 'unknown'으로
+    넘긴다(러그가 바닥 면적 때문에 1m 넘게 잡히던 문제). Gemini가 이름·사진으로 고친다."""
+    if not obj.get("h_m") or obj.get("h_source") in {"room_ratio", "footprint"}:
+        return "unknown"
+    return f"{float(obj['h_m']):.2f} m"
 
 
 def _prompt(graph: dict[str, Any]) -> str:
@@ -158,8 +170,7 @@ def _prompt(graph: dict[str, Any]) -> str:
             for key in ("color", "material", "pattern")
             if obj.get(key)
         )
-        height = _height_m(obj)
-        lines.append(f'- {obj["id"]} | {obj.get("type")} | {obj.get("label")} | {w} x {h} | {height:.2f} m | {hints or "-"}')
+        lines.append(f'- {obj["id"]} | {obj.get("type")} | {obj.get("label")} | {w} x {h} | {_height_hint(obj)} | {hints or "-"}')
     return ARTWORK_PROMPT + "\n" + "\n".join(lines)
 
 
@@ -218,11 +229,21 @@ def parse_artwork(svg_text: str, expected_ids: list[str]) -> dict[str, Any]:
                 h = float(child.get("data-h") or 0)
             except ValueError:
                 w = h = 0.0
+            try:
+                height_m = float(child.get("data-height-m") or 0)
+            except ValueError:
+                height_m = 0.0
             rewrite(child)
             child.attrib.pop("id", None)
             inner = "".join(ET.tostring(item, encoding="unicode") for item in child)
             if inner.strip():
-                objects[child_id] = {"markup": inner, "w": w, "h": h}
+                objects[child_id] = {
+                    "markup": inner,
+                    "w": w,
+                    "h": h,
+                    # 이름·사진으로 판단한 실제 높이(m). 범위 밖이면 버린다
+                    "height_m": round(height_m, 3) if 0.003 <= height_m <= 4.0 else None,
+                }
     # ET.tostring이 붙이는 네임스페이스 접두사를 걷어 낸다(평면도 SVG에 그대로 끼우기 위해)
     def clean(markup: str) -> str:
         return markup.replace(f' xmlns:ns0="{SVG_NS}"', "").replace("ns0:", "").replace(f' xmlns="{SVG_NS}"', "")
