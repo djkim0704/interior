@@ -133,7 +133,9 @@ def extract(
         config=types.GenerateContentConfig(
             response_mime_type="application/json",
             temperature=0.1,
-            max_output_tokens=1024,
+            # pro 계열은 thinking을 끌 수 없어 추론 토큰이 이 한도를 함께 쓴다.
+            # 1024면 응답이 잘려 모든 상품이 타입 기본 형태로 떨어진다
+            max_output_tokens=8192,
             thinking_config=minimal_thinking(model),
         ),
     )

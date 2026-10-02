@@ -77,6 +77,8 @@ class ExtractTests(unittest.TestCase):
         self.assertEqual((out["material"], out["leg_style"], out["analysis_source"]), ("leather", "metal_legs", "gemini"))
         # Gemini 3 계열은 thinking_level로 최소화한다(thinking_budget=0은 400)
         self.assertIsNotNone(Client.models.config.thinking_config.thinking_level)
+        # pro 모델이면 thinking 토큰이 한도를 함께 쓰므로 넉넉해야 한다
+        self.assertGreaterEqual(Client.models.config.max_output_tokens, 8192)
 
 
 class SceneIntegrationTests(unittest.TestCase):

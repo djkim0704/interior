@@ -121,7 +121,7 @@ class GenerateViewsTests(unittest.TestCase):
     def test_floorplan_svg_is_the_primary_reference(self) -> None:
         artwork = {
             "defs": '<linearGradient id="gx-a"/>',
-            "objects": {"sofa_0": {"markup": '<rect width="200" height="90" fill="#123456"/>', "w": 200, "h": 90}},
+            "objects": {"sofa_0": {"markup": '<rect width="200" height="90" fill="#123456"/><rect width="50" height="20" fill="url(#gx-a)"/>', "w": 200, "h": 90}},
         }
         client = _Client()
         gfv.generate_object_views(_scene(), self.cache, room_photo=self.photo, client=client, model="img", artwork=artwork)
@@ -144,6 +144,28 @@ class GenerateViewsTests(unittest.TestCase):
         Image.new("RGB", (400, 300), "#405060").save(other)
         gfv.generate_object_views(scene, self.cache, room_photo=other, client=client, model="img")
         self.assertEqual(len(client.models.calls), 8)
+
+
+    def test_long_shared_defs_never_cut_the_item_drawing(self) -> None:
+        filler = "".join(f'<linearGradient id="gx-unused{i}"><stop offset="0" stop-color="#000"/></linearGradient>' for i in range(400))
+        artwork = {
+            "defs": filler + '<linearGradient id="gx-used"><stop offset="0" stop-color="#abcdef"/></linearGradient>',
+            "objects": {"sofa_0": {"markup": '<rect width="200" height="90" fill="url(#gx-used)"/>', "w": 200, "h": 90}},
+        }
+        svg = gfv.object_svg(artwork, "sofa_0")
+        self.assertTrue(svg.endswith('fill="url(#gx-used)" /></svg>') or svg.endswith('fill="url(#gx-used)"/></svg>'))
+        self.assertIn('id="gx-used"', svg)
+        self.assertNotIn("gx-unused", svg)
+        self.assertLessEqual(len(svg), gfv.SVG_REFERENCE_MAX_CHARS)
+
+    def test_product_without_image_file_does_not_use_room_photo(self) -> None:
+        scene = _scene()
+        scene["objects"][0].pop("photo_box")
+        scene["objects"][0].update(is_product=True, image_file="missing.jpg")
+        client = _Client()
+        gfv.generate_object_views(scene, self.cache, room_photo=self.photo, client=client, model="img")
+        self.assertEqual(len(client.models.calls[0]), 1)  # 프롬프트만, 방 사진 없음
+        self.assertNotIn("whole real room", client.models.calls[0][0])
 
 
 if __name__ == "__main__":

@@ -25,6 +25,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import threading
 import time
 from collections import deque
@@ -114,11 +115,40 @@ def object_svg(artwork: dict[str, Any] | None, object_id: str) -> str | None:
         return None
     width = float(drawn.get("w") or 240)
     height = float(drawn.get("h") or 240)
-    svg = (
-        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width:.0f} {height:.0f}">'
-        f'<defs>{artwork.get("defs") or ""}</defs>{drawn["markup"]}</svg>'
-    )
-    return svg if len(svg) <= SVG_REFERENCE_MAX_CHARS else svg[:SVG_REFERENCE_MAX_CHARS]
+    markup = drawn["markup"]
+    # defs는 방 전체 가구가 공유한다. 이 가구가 참조하는 정의만 남겨야 길이가 줄고,
+    # 문자열을 중간에서 자르면 가구 그림 자체나 닫는 태그가 잘려 망가진 SVG가 된다
+    defs = _referenced_defs(str(artwork.get("defs") or ""), markup)
+    head = f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width:.0f} {height:.0f}">'
+    svg = f"{head}<defs>{defs}</defs>{markup}</svg>"
+    if len(svg) > SVG_REFERENCE_MAX_CHARS:
+        # 그래도 길면 정의를 버린다(그라데이션만 빠지고 모양·색은 남는다)
+        svg = f"{head}{markup}</svg>"
+    if len(svg) > SVG_REFERENCE_MAX_CHARS:
+        # 가구 그림만으로도 너무 길면 잘린 SVG를 보내느니 SVG 없이 사진으로만 그린다
+        return None
+    return svg
+
+
+def _referenced_defs(defs: str, markup: str) -> str:
+    """defs의 최상위 요소 중 markup이 url(#id)로 참조하는 것만 고른다."""
+    if not defs:
+        return ""
+    used = set(re.findall(r"url\(#([^)]+)\)", markup))
+    if not used:
+        return ""
+    import xml.etree.ElementTree as ET
+
+    try:
+        root = ET.fromstring(f'<defs xmlns="http://www.w3.org/2000/svg">{defs}</defs>')
+    except ET.ParseError:
+        return ""
+    keep = []
+    for child in list(root):
+        if child.get("id") in used:
+            text = ET.tostring(child, encoding="unicode")
+            keep.append(text.replace(' xmlns:ns0="http://www.w3.org/2000/svg"', "").replace("ns0:", "").replace(' xmlns="http://www.w3.org/2000/svg"', ""))
+    return "".join(keep)
 
 
 TURNS = {
@@ -220,14 +250,19 @@ def _item(
     artwork: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     reference = _object_image(obj, room_photo, image_dir)
+    is_product = bool(obj.get("image_file") or obj.get("is_product"))
     if reference is not None:
         photo_kind = "product" if obj.get("image_file") else "crop"
+    elif is_product:
+        # 상품 사진 파일이 없더라도 방 사진으로 대신하지 않는다. 방 사진에는 새로 산
+        # 상품이 없어서, 모델이 기존 가구를 대신 그리게 된다. 설명만으로 그린다
+        photo_kind = None
     else:
         # 사진 속 위치(photo_box)가 없는 옛 분석이면 방 사진 전체를 보낸다. 아무것도 안
         # 보내면 다른 방의 같은 이름 가구와 구분되지 않아 엉뚱한 그림이 나온다
         reference = _room_photo_bytes(room_photo)
         photo_kind = "room" if reference is not None else None
-    svg = object_svg(artwork, str(obj["id"])) if not obj.get("image_file") else None
+    svg = object_svg(artwork, str(obj["id"])) if not is_product else None
     return {
         "svg": svg,
         "svg_digest": hashlib.sha256(svg.encode("utf-8")).hexdigest()[:16] if svg else None,
