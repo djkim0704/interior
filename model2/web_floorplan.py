@@ -25,6 +25,7 @@ from .scene_render_2d import render_svg as render_scene_graph_svg
 from .gemini_floorplan_artwork import generate_artwork, room_style
 from . import product_attributes
 from . import product_dimensions
+from . import gemini_scene_refine
 from .gemini_svg_experiment import _extract_svg, generate_svg_text
 from .product_icon_svg import generate_product_icon_svg
 from .topdown_experiment.run import analyze_room
@@ -1757,6 +1758,23 @@ def _finish_with_scene_graph(
             # 방 정보는 편집·상품 추가로 만든 배치에도 그대로 따라간다
             graph["room"]["art_style"] = room_style(artwork)
             apply_artwork_heights(graph, artwork)
+    if gemini_scene_refine.enabled():
+        # 그림까지 그린 뒤 방 실측과 가구 이름으로 크기·높이·배치를 한 번 더 판단하게 한다
+        # (평면도당 1회, 같은 입력이면 캐시). 고친 뒤 충돌·벽·동선은 보정기가 다시 맞춘다
+        changes = gemini_scene_refine.refine(
+            client,
+            graph,
+            model=os.getenv("GEMINI_SCENE_REFINE_MODEL", "").strip() or layout_model,
+            cache_dir=output_dir / "gemini_scene_refine_v1",
+        )
+        if changes:
+            from .placement_solver import solve as solve_placement
+
+            scene_graph._place_wall_mounted(graph)
+            solve_placement(graph)
+            for obj in graph["objects"]:
+                obj["edit_origin"] = scene_graph._origin(obj)
+            graph = scene_graph.sync_legacy(graph)
     layout_path.write_text(
         json.dumps(graph, ensure_ascii=False, indent=2),
         encoding="utf-8",

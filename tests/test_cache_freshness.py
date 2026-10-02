@@ -57,7 +57,8 @@ class AnalysisCacheTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             photo = Path(tmp) / "upload_x.jpg"
             Image.new("RGB", (64, 48), "#c8b8a0").save(photo)
-            env = {"FLOORPLAN_2D_ARTWORK": "local", "GEMINI_API_KEY": "test", "GEMINI_LAYOUT_THINKING": "low"}
+            env = {"FLOORPLAN_2D_ARTWORK": "local", "GEMINI_API_KEY": "test", "GEMINI_LAYOUT_THINKING": "low",
+                   "GEMINI_SCENE_REFINE": "0"}
             with mock.patch.dict(os.environ, env), \
                     mock.patch.object(web_floorplan, "analyze_room", fake_analyze), \
                     mock.patch.object(web_floorplan, "_client", lambda: object()):

@@ -333,6 +333,11 @@ venv\Scripts\python.exe -m py_compile backend/app.py   # 저장 직후 확인
   `elevation_m`, `room.ceiling_height_m`). 빠진 가구는 같은 방 가구의 '높이 ÷ 긴 변' 비율로
   채운다(`scene_graph.fill_missing_heights`, `h_source`에 근거). 천장은 분석값, 없으면 가장
   높이 닿는 객체(`ceiling_from_objects`).
+- **배치 보정(LLM):** SVG를 그린 뒤 `gemini_scene_refine`이 방 실측과 가구 목록(이름·크기·높이·
+  위치·방향)을 글로만 보내 크기·높이·배치를 다시 판단하게 한다(평면도당 1회, 같은 입력이면 캐시,
+  `GEMINI_SCENE_REFINE=0`이면 끔). 문·창문·사용자 수정·추가 상품은 고치지 않고, 한 번에 1m 넘게
+  옮기지 못한다. 고친 뒤 placement_solver가 충돌·벽·동선을 다시 맞춘다. 근거는 `llm_refinements`.
+  그래서 평면도 1장에 Gemini 호출이 3회다(분석·SVG·보정).
 - **높이 보정:** 2D 그림 요청이 가구 이름·종류·사진을 보고 실제 높이를 `<g data-height-m>`로 다시
   적는다(`ARTWORK_VERSION` 3). 이 값이 있으면 분석값보다 우선한다(`apply_artwork_heights`,
   `h_source="svg"`). 비율로 채운 높이는 근거가 약해 요청에 "unknown"으로 넘긴다.
