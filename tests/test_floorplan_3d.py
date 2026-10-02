@@ -63,7 +63,7 @@ class HeightFromAnalysisTests(unittest.TestCase):
 
 
 class Step6WiringTests(unittest.TestCase):
-    """STEP 6(3D 배치 확인) 화면이 실제로 연결돼 있는지. Flask 없이 소스로 확인한다."""
+    """마지막 단계(STEP 5, 3D 배치 확인) 화면이 실제로 연결돼 있는지. Flask 없이 소스로 확인한다."""
 
     def setUp(self) -> None:
         self.app_src = (ROOT / "backend" / "app.py").read_text(encoding="utf-8")
@@ -113,17 +113,17 @@ class Step6WiringTests(unittest.TestCase):
                      "_model2_floorplan.svg"):
             self.assertIn(part, block)
 
-    def test_result_page_links_to_step6(self) -> None:
+    def test_result_page_links_to_3d_step(self) -> None:
         result = (ROOT / "frontend" / "templates" / "result.html").read_text(
             encoding="utf-8"
         )
         self.assertIn("url_for('preview_3d')", result)
 
-    def test_step6_template_autostarts_the_viewer(self) -> None:
+    def test_3d_step_template_autostarts_the_viewer(self) -> None:
         page = (ROOT / "frontend" / "templates" / "preview_3d.html").read_text(
             encoding="utf-8"
         )
-        self.assertIn("STEP 6", page)
+        self.assertIn("STEP 5", page)
         self.assertIn('data-autostart="true"', page)
         # importmap 이 module 스크립트보다 먼저 와야 bare specifier 가 해석된다
         self.assertLess(page.index('type="importmap"'), page.index('type="module"'))
@@ -200,6 +200,22 @@ class TypeVocabularyAlignmentTests(unittest.TestCase):
         self.assertEqual(
             set(), missing, f"프롬프트에 빠진 타입(Gemini가 못 씀): {sorted(missing)}"
         )
+
+
+
+class StepLabelTests(unittest.TestCase):
+    """건너뛴 페이지(가구 선택·상품 선택)가 있어도 보이는 단계 번호는 1~5로 이어진다."""
+
+    def test_visible_steps_are_sequential(self) -> None:
+        pages = ["prompt", "upload", "floorplan", "result", "preview_3d"]
+        for number, name in enumerate(pages, start=1):
+            page = (ROOT / "frontend" / "templates" / f"{name}.html").read_text(encoding="utf-8")
+            self.assertRegex(page, rf"STEP\s+{number}(?!\d)", name)
+
+    def test_footer_links_to_repository(self) -> None:
+        footer = (ROOT / "frontend" / "templates" / "footer.html").read_text(encoding="utf-8")
+        self.assertIn('href="https://github.com/dongdongjun123/interior"', footer)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
