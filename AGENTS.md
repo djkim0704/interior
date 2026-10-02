@@ -227,7 +227,7 @@ frontend/templates/, static/      Jinja 템플릿과 정적 파일
   주기 때문에 가능하다. 결과는 `source="ai_refined"`로 표시되고 사람이 고친 가구는
   건드리지 않는다. Gemini 호출이므로 버튼을 눌렀을 때만 돈다.
 - 상품 실측 치수는 `model2/product_dimensions.py`가 정한다(제목 → 설명 → 상품 페이지 →
-  사진 속 치수표 → 규격(퀸·3인용) → 타입 기본값). 출처는 `dimension_source`, 실측
+  사진 속 치수표 → Gemini 사진 추정). 못 찾으면 추가를 막는다. 출처는 `dimension_source`, 실측
   여부는 `measured`로 남는다. 형태 속성은 `model2/product_attributes.py`(사진 → Gemini).
   `/add-product`가 새 상품만 분석한다(아이콘·속성·치수, 이미지 URL 단위 캐시).
 - **추천은 무드 + 공간을 함께 본다**(`model2/spatial_fit.py`). 상품을 실제 치수로
@@ -337,6 +337,12 @@ venv\Scripts\python.exe -m py_compile backend/app.py   # 저장 직후 확인
   (`product_attributes`의 `estimated_dimensions_cm`, `dimension_source="ai_estimate"`). 모두
   없으면 `resolve()`가 None이고, 상품 추가는 400으로 막는다(교체는 원래 가구 크기를 물려받음).
   추천 목록에서 치수를 모르는 상품은 공간·크기 점수를 재지 않는다("치수 정보 없음").
+- **방 축척:** 업로드에서 방 가로·세로를 필수로 받는다(없으면 다음 단계로 못 간다). 가구 표준
+  치수로 축척을 추정하던 기능(`REFERENCE_SIZES`)과 긴 변 4m 가정은 지웠다. 한 변만 들어온
+  경우(평가 스크립트 등)는 분석한 방 비율로 나머지를 계산하고, 둘 다 없으면 `calibrate_room`이
+  ValueError를 낸다.
+- **추천 크기 점수:** 교체 대상과 비교할 때만 매긴다. 새로 추가하는 상품은 무드·공간으로만
+  순위를 정한다(종류별 '적당한 면적' 표 `AREA_SHARE`는 지웠다, `spatial_fit.weighted_total`).
 - **문 추가:** 폭을 사용자가 입력한다(`w_m` 필수).
 - **예전 형식(rule_based_v3) 배치**는 높이 정보가 없어 3D로 세우지 않는다(`placement: "unsupported"`).
 

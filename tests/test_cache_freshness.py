@@ -61,13 +61,13 @@ class AnalysisCacheTests(unittest.TestCase):
             with mock.patch.dict(os.environ, env), \
                     mock.patch.object(web_floorplan, "analyze_room", fake_analyze), \
                     mock.patch.object(web_floorplan, "_client", lambda: object()):
-                web_floorplan.generate_floorplan_for_web(photo, tmp, analysis_model="m1")
-                web_floorplan.generate_floorplan_for_web(photo, tmp, analysis_model="m1")
+                web_floorplan.generate_floorplan_for_web(photo, tmp, analysis_model="m1", room_width=4.0, room_depth=5.0)
+                web_floorplan.generate_floorplan_for_web(photo, tmp, analysis_model="m1", room_width=4.0, room_depth=5.0)
                 self.assertEqual(calls, ["m1"])  # 같은 설정이면 재사용
-                web_floorplan.generate_floorplan_for_web(photo, tmp, analysis_model="m2")
+                web_floorplan.generate_floorplan_for_web(photo, tmp, analysis_model="m2", room_width=4.0, room_depth=5.0)
                 self.assertEqual(calls, ["m1", "m2"])  # 모델이 바뀌면 다시 분석
                 with mock.patch.dict(os.environ, {"GEMINI_LAYOUT_THINKING": "high"}):
-                    web_floorplan.generate_floorplan_for_web(photo, tmp, analysis_model="m2")
+                    web_floorplan.generate_floorplan_for_web(photo, tmp, analysis_model="m2", room_width=4.0, room_depth=5.0)
                 self.assertEqual(calls, ["m1", "m2", "m2"])  # thinking 설정이 바뀌어도 다시 분석
 
 

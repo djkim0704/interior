@@ -57,7 +57,7 @@ class FromAnalysisTests(unittest.TestCase):
         self.assertAlmostEqual(bed["h"], 0.3, places=3)
 
     def test_categories_map_to_renderable_types(self) -> None:
-        graph = scene_graph.from_analysis(_analysis())
+        graph = scene_graph.from_analysis(_analysis(), width_m=4.0, depth_m=5.0)
         types = {o["id"]: o["type"] for o in graph["objects"]}
         self.assertEqual(types["sofa_1"], "sofa")
         self.assertEqual(types["lamp_1"], "lamp")
@@ -84,23 +84,6 @@ class CalibrationTests(unittest.TestCase):
         room = scene_graph.calibrate_room(0.8, [], depth_m=4.0)
         self.assertAlmostEqual(room["width_m"], 3.2, places=3)
 
-    def test_reference_bed_sets_scale(self) -> None:
-        # 침대 긴 변이 방 가로의 0.5 → 기준 추정 4.0m. 사전값(긴 변 4m → 가로 3.2m)
-        # 쪽으로 조금 당겨지지만 침대는 가중치가 커서 추정 쪽에 가깝다
-        objects = [{"id": "bed_1", "type": "bed", "category": "bed", "w": 0.5, "h": 0.3, "confidence": 1.0}]
-        room = scene_graph.calibrate_room(0.8, objects)
-        self.assertEqual(room["scale_source"], "reference_objects")
-        self.assertGreater(room["width_m"], 3.6)
-        self.assertLess(room["width_m"], 4.0)
-        self.assertEqual(room["scale_references"][0]["width_estimate_m"], 4.0)
-
-    def test_weak_reference_is_pulled_toward_typical_room(self) -> None:
-        # 책상 하나만으로 방 가로 2.0m가 나오면 사전값(3.2m) 쪽으로 크게 당긴다
-        objects = [{"id": "desk_1", "type": "desk", "category": "desk", "w": 0.5, "h": 0.24, "confidence": 0.5}]
-        room = scene_graph.calibrate_room(0.8, objects)
-        self.assertEqual(room["scale_references"][0]["width_estimate_m"], 2.0)
-        self.assertGreater(room["width_m"], 2.6)
-
     def test_wall_mounted_long_side_runs_along_wall_and_is_thin(self) -> None:
         analysis = _analysis()
         # 분석기가 TV의 긴 변을 벽과 수직으로 준 경우
@@ -116,10 +99,10 @@ class CalibrationTests(unittest.TestCase):
         # 3D 기준으로 바닥면이 방 밖으로 나가지 않는다
         self.assertEqual(metrics.wall_metrics([dict(tv, wall_mounted=False, type="cabinet")], graph["room"])["wall_penetrations"], 0)
 
-    def test_falls_back_to_default_without_references(self) -> None:
-        room = scene_graph.calibrate_room(0.8, [{"type": "plant", "w": 0.1, "h": 0.1}])
-        self.assertEqual(room["scale_source"], "default")
-        self.assertAlmostEqual(room["depth_m"], scene_graph.DEFAULT_LONG_SIDE_M, places=3)
+    def test_no_measurement_is_an_error(self) -> None:
+        # 가구 표준 치수로 축척을 추정하지 않는다. 업로드에서 가로·세로를 필수로 받는다
+        with self.assertRaises(ValueError):
+            scene_graph.calibrate_room(0.8, [{"type": "bed", "w": 0.5, "h": 0.3}])
 
 
 class EnsureTests(unittest.TestCase):
@@ -176,14 +159,14 @@ class SyncTests(unittest.TestCase):
         self.assertGreater(bed["iou"], 0.99)
 
     def test_floor_box_used_by_editor_matches_renderer(self) -> None:
-        graph = scene_graph.from_analysis(_analysis())
+        graph = scene_graph.from_analysis(_analysis(), width_m=4.0, depth_m=5.0)
         m = layout_metrics(graph)
         root = ET.fromstring(render_svg(graph))
         for got, expected in zip(_floor_box(root), (m["floor_x"], m["floor_y"], m["floor_w"], m["floor_h"])):
             self.assertAlmostEqual(got, expected, places=2)
 
     def test_low_confidence_object_is_marked(self) -> None:
-        svg = render_svg(scene_graph.from_analysis(_analysis()))
+        svg = render_svg(scene_graph.from_analysis(_analysis(), width_m=4.0, depth_m=5.0))
         self.assertIn('data-low-confidence="true"', svg)
         self.assertIn("소파 ?", svg)
 
@@ -224,7 +207,7 @@ class EditRoundTripTests(unittest.TestCase):
         self.assertAlmostEqual(next(o for o in twice["objects"] if o["id"] == "desk_1")["w_m"], desk_w * 1.5, places=3)
 
     def test_label_follows_furniture_when_dragged(self) -> None:
-        graph = scene_graph.from_analysis(_analysis())
+        graph = scene_graph.from_analysis(_analysis(), width_m=4.0, depth_m=5.0)
         markup = prepare_floorplan_edit_markup(render_svg(graph), graph)
         self.assertIn('data-label-id="label-desk_1"', markup)
 

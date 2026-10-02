@@ -1391,8 +1391,16 @@ def upload():
             or ""
         ).strip()
 
-        # 세 항목은 각각 선택이다. 가로·세로 중 한 변만 있어도
-        # Scene Graph가 사진에서 읽은 비율로 나머지 변을 계산한다.
+        # 가로·세로는 필수다. 축척의 기준이라 가구 크기로 추정하지 않는다.
+        # 천장 높이는 선택(비어 있으면 공간 분석이 사진에서 추정한다)
+        if not room_width_raw or not room_depth_raw:
+            return jsonify(
+                {
+                    "ok": False,
+                    "error": "방의 가로·세로를 입력해 주세요.",
+                }
+            ), 400
+
         parsed_dimensions = {}
 
         for name, raw, low, high in (
@@ -1698,6 +1706,17 @@ def floorplan():
     if (
         "uploaded_file"
         not in session
+    ):
+        return redirect(
+            url_for(
+                "upload"
+            )
+        )
+
+    # 방 가로·세로 없이 만든 예전 세션은 축척을 잡을 수 없어 업로드부터 다시 한다
+    if (
+        session.get("room_width") is None
+        or session.get("room_depth") is None
     ):
         return redirect(
             url_for(
@@ -4234,20 +4253,8 @@ def search_products():
                     print(f"[search-products] 적합도 계산 실패: {fit_exc}")
                     continue
                 mood = mood_scores.get(id(product))
-                # 치수를 몰라 공간·크기를 못 잰 상품은 0점으로 둔다(뒤로 밀린다)
-                space = fit["space"] or 0.0
-                size = fit["size"] or 0.0
-                if mood is None:
-                    total = (
-                        spatial_fit.WEIGHTS["space"] * space
-                        + spatial_fit.WEIGHTS["size"] * size
-                    ) / (spatial_fit.WEIGHTS["space"] + spatial_fit.WEIGHTS["size"])
-                else:
-                    total = (
-                        spatial_fit.WEIGHTS["mood"] * mood
-                        + spatial_fit.WEIGHTS["space"] * space
-                        + spatial_fit.WEIGHTS["size"] * size
-                    )
+                # 잰 항목만 가중 평균한다(치수 미상은 공간 0점, 새 상품은 크기 항목 없음)
+                total = spatial_fit.weighted_total(mood, fit)
                 product["fit"] = {
                     "mood": mood,
                     "space": fit["space"],

@@ -67,6 +67,16 @@ class SpatialFitTests(unittest.TestCase):
         self.assertEqual((fit["dimensions"], fit["space"], fit["size"], fit["fits"]), (None, None, None, None))
         self.assertIn("치수 정보가 없어 공간 적합도를 재지 못했어요", fit["reasons"])
 
+    def test_new_product_has_no_size_score(self) -> None:
+        # 종류별 '적당한 면적' 표는 없다. 비교할 교체 대상이 없으면 크기 점수를 매기지 않는다
+        fit = spatial_fit.make_scorer(_room([]), "desk")({"title": "책상 1200x600x740"})
+        self.assertIsNone(fit["size"])
+        self.assertAlmostEqual(
+            spatial_fit.weighted_total(0.5, fit),
+            (0.55 * 0.5 + 0.30 * fit["space"]) / 0.85,
+            places=4,
+        )
+
     def test_combine_pushes_non_fitting_down(self) -> None:
         good = spatial_fit.combine(0.6, {"space": 1.0, "size": 1.0, "fits": True})
         great_mood_but_no_room = spatial_fit.combine(1.0, {"space": 0.0, "size": 0.0, "fits": False})

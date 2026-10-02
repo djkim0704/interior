@@ -1004,9 +1004,6 @@ function init() {
       // 치수를 무엇으로 정했는지 밝혀 둔다. 추정 근거를 알아야 사용자가 믿고 고칠 수 있다.
       const basis = {
         user_one_side: "입력한 한 변과 사진에서 읽은 방 비율로 계산",
-        reference_objects: "침대·문 같은 표준 크기 가구로 추정",
-        reference_objects_clamped: "표준 크기 가구로 추정(일반적인 방 크기 범위로 보정)",
-        default: "기준 가구가 없어 긴 변 4m로 가정",
       }[room.scale_source];
       status.textContent = room.estimated
         ? `방 치수 ${room.width_m}m × ${room.depth_m}m — ${basis || "추정값"}. 정확한 확인을 위해 실측값 입력을 권장합니다.`

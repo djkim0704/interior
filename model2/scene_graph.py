@@ -21,15 +21,12 @@ from __future__ import annotations
 
 import copy
 import math
-import statistics
 import time
 from typing import Any
 
 SCHEMA = "scene_graph_v1"
 
-DEFAULT_LONG_SIDE_M = 4.0
 MIN_ASPECT, MAX_ASPECT = 0.35, 2.5
-MIN_ROOM_SIDE_M, MAX_ROOM_SIDE_M = 1.5, 12.0
 WALL_GAP_M = 0.04  # 벽걸이 객체가 벽에서 떨어진 거리. floorplan_3d.js와 같아야 한다
 
 WALLS = ("top", "right", "bottom", "left")
@@ -120,30 +117,6 @@ WALL_FACING_TYPES = {
     "washer",
 }
 
-# 실제 크기를 아는 기준 객체. 방 실측이 없을 때 축척을 추정하는 데 쓴다(항목 12).
-#   side: 평면도에서 이 길이가 긴 변(long)인지 짧은 변(short)인지.
-#         분석기가 주는 가구 방향은 자주 틀려서, 방향과 무관한 긴 변·짧은 변을 쓴다.
-#   length_m: 국내 기성 가구·건축 표준 치수
-#   weight: 치수 편차가 작을수록 크게 둔다. 침대 길이(1.95~2.1m)가 가장 안정적이다.
-REFERENCE_SIZES = {
-    "bed": {"side": "long", "length_m": 2.0, "weight": 1.0},
-    "door": {"side": "long", "length_m": 0.9, "weight": 0.7},
-    "desk": {"side": "short", "length_m": 0.6, "weight": 0.4},
-    "wardrobe": {"side": "short", "length_m": 0.6, "weight": 0.5},
-    "sofa": {"side": "short", "length_m": 0.9, "weight": 0.3},
-    "fridge": {"side": "long", "length_m": 0.75, "weight": 0.4},
-    "washer": {"side": "long", "length_m": 0.6, "weight": 0.4},
-}
-# 1인용·수납형처럼 표준 치수에서 크게 벗어나는 카테고리는 기준에서 뺀다
-REFERENCE_EXCLUDED_CATEGORIES = {"armchair", "loveseat", "sofa_bed", "bunk_bed", "closet"}
-# 실측 없이 추정한 방의 긴 변 허용 범위(m). 사진 한 장 분석의 크기 오차가 커서
-# 주거 공간에서 흔한 범위로 묶는다.
-ESTIMATE_LONG_SIDE_RANGE = (2.6, 7.0)
-# 기준 가구 추정을 일반적인 방 크기(긴 변 DEFAULT_LONG_SIDE_M) 쪽으로 당기는 강도.
-# 기준 가구 가중치 합이 이 값보다 작으면 사전값 쪽이 더 크게 반영된다.
-# 침대 하나(가중치 1.0 × 신뢰도)면 추정이 우세하고, 책상 하나(0.4 × 신뢰도)면
-# 사전값에 가깝게 나온다. 정답 데이터가 생기면 이 값을 다시 맞춘다.
-PRIOR_WEIGHT = 0.6
 # 벽걸이 객체의 최대 두께(m). 3D가 벽에서 WALL_GAP_M 떨어진 곳에 중심을 두므로
 # 이보다 두꺼우면 벽을 뚫고 나간다.
 WALL_MOUNTED_MAX_DEPTH_M = 0.08
@@ -248,24 +221,20 @@ def _nearest_wall(cx: float, cy: float, width: float, depth: float) -> str:
 
 def calibrate_room(
     aspect: float,
-    objects_normalized: list[dict[str, Any]],
+    objects_normalized: list[dict[str, Any]] | None = None,
     *,
     width_m: float | None = None,
     depth_m: float | None = None,
 ) -> dict[str, Any]:
     """방의 실제 가로·세로를 정한다 (항목 11·12).
 
-    우선순위
-      1) 사용자가 가로·세로를 모두 입력 → 그대로 쓴다 ("user")
+    축척은 사용자가 입력한 실측으로만 잡는다(가구 표준 치수로 추정하지 않는다).
+      1) 가로·세로를 모두 입력 → 그대로 쓴다 ("user")
       2) 한 변만 입력 → 분석한 가로÷세로 비율로 나머지 변을 계산 ("user_one_side")
-      3) 입력 없음 → 크기를 아는 기준 가구(침대 길이 2.0m, 문 폭 0.9m 등)의
-         정규화 길이로 축척을 추정 ("reference_objects")
-      4) 기준 가구도 없음 → 긴 변 4.0m 가정 ("default")
+    둘 다 없으면 ValueError. 업로드 화면이 가로·세로를 필수로 받는다.
     """
     aspect = _number(aspect, 0.75, MIN_ASPECT, MAX_ASPECT)
     width_m, depth_m = _positive(width_m), _positive(depth_m)
-    references: list[dict[str, Any]] = []
-
     if width_m and depth_m:
         source = "user"
     elif width_m or depth_m:
@@ -275,84 +244,15 @@ def calibrate_room(
         else:
             width_m = depth_m * aspect
     else:
-        # 방 가로를 W라 두면 세로는 W/aspect. 기준 가구의 정규화 길이 × 방 길이 =
-        # 표준 길이 이므로, 가구마다 W 후보를 하나씩 얻고 가중 중앙값을 쓴다.
-        estimates: list[tuple[float, float]] = []
-        for obj in objects_normalized:
-            spec = REFERENCE_SIZES.get(str(obj.get("type")))
-            if not spec or str(obj.get("category") or "") in REFERENCE_EXCLUDED_CATEGORIES:
-                continue
-            nw, nd = float(obj["w"]), float(obj["h"])  # 평면도 가로·세로(정규화)
-            if nw <= 0 or nd <= 0:
-                continue
-            # 방 가로를 W라 하면 이 가구의 평면도 크기는 (nw·W, nd·W/aspect).
-            # 긴 변이 표준 길이 L이면 W = L / max(nw, nd/aspect),
-            # 짧은 변이 L이면 W = L / min(nw, nd/aspect).
-            x_unit, y_unit = nw, nd / aspect
-            span = max(x_unit, y_unit) if spec["side"] == "long" else min(x_unit, y_unit)
-            estimate = spec["length_m"] / span
-            weight = spec["weight"] * _number(obj.get("confidence"), 0.5, 0.05, 1.0)
-            estimates.append((estimate, weight))
-            references.append(
-                {
-                    "id": obj.get("scene_id") or obj.get("id"),
-                    "type": obj.get("type"),
-                    "standard_m": spec["length_m"],
-                    "width_estimate_m": round(estimate, 3),
-                    "weight": round(weight, 3),
-                }
-            )
-        plausible = [
-            (value, weight)
-            for value, weight in estimates
-            if MIN_ROOM_SIDE_M <= value <= MAX_ROOM_SIDE_M
-            and MIN_ROOM_SIDE_M <= value / aspect <= MAX_ROOM_SIDE_M
-        ]
-        if plausible:
-            source = "reference_objects"
-            estimate = _weighted_median(plausible)
-            # 사진 한 장의 가구 크기는 오차가 커서, 기준이 약할 때는 사전값과
-            # 로그 공간에서 가중 평균한다(곱셈 오차라 로그 평균이 맞다)
-            prior = DEFAULT_LONG_SIDE_M * (1.0 if aspect >= 1.0 else aspect)
-            total = sum(weight for _, weight in plausible)
-            width_m = math.exp(
-                (total * math.log(estimate) + PRIOR_WEIGHT * math.log(prior))
-                / (total + PRIOR_WEIGHT)
-            )
-            depth_m = width_m / aspect
-            low, high = ESTIMATE_LONG_SIDE_RANGE
-            long_side = max(width_m, depth_m)
-            if not low <= long_side <= high:
-                factor = min(high, max(low, long_side)) / long_side
-                width_m, depth_m = width_m * factor, depth_m * factor
-                source = "reference_objects_clamped"
-        else:
-            source = "default"
-            if aspect >= 1.0:
-                width_m, depth_m = DEFAULT_LONG_SIDE_M, DEFAULT_LONG_SIDE_M / aspect
-            else:
-                width_m, depth_m = DEFAULT_LONG_SIDE_M * aspect, DEFAULT_LONG_SIDE_M
-
+        raise ValueError("방 가로·세로 실측이 없어 축척을 정할 수 없습니다.")
     return {
         "width_m": round(float(width_m), 3),
         "depth_m": round(float(depth_m), 3),
         "aspect_ratio": round(float(width_m) / float(depth_m), 4),
         "scale_source": source,
-        "scale_references": references,
         # 사용자가 두 변을 다 준 경우만 '실측'이다. 화면에 추정 배지를 띄우는 기준
-        "estimated": source not in {"user"},
+        "estimated": source != "user",
     }
-
-
-def _weighted_median(values: list[tuple[float, float]]) -> float:
-    ordered = sorted(values)
-    total = sum(weight for _, weight in ordered)
-    running = 0.0
-    for value, weight in ordered:
-        running += weight
-        if running >= total / 2:
-            return value
-    return statistics.median(v for v, _ in ordered)
 
 
 # ---------------------------------------------------------------- 생성

@@ -5,7 +5,7 @@
 찾게 한 뒤 세 가지를 잰다.
 
   space_fit  겹치지 않는 자리가 있고 동선이 유지되는가 (0~1)
-  size_fit   교체 대상 또는 방 크기에 비해 크기가 적당한가 (0~1)
+  size_fit   교체 대상과 크기가 비슷한가 (0~1). 새로 추가하는 상품은 비교 대상이 없어 None
   reasons    사용자에게 보여 줄 근거 문장
 
 치수는 제목·설명에서만 읽는다(product_dimensions.resolve, fetch=False). 추천 목록마다
@@ -19,23 +19,6 @@ from typing import Any, Callable
 
 from . import placement_solver, product_dimensions, scene_graph
 
-# 방 면적 대비 가구 바닥 면적의 자연스러운 범위(주거 공간 경험값)
-AREA_SHARE = {
-    "bed": (0.12, 0.32),
-    "sofa": (0.07, 0.22),
-    "desk": (0.03, 0.10),
-    "table": (0.04, 0.14),
-    "low_table": (0.02, 0.08),
-    "chair": (0.01, 0.04),
-    "bench": (0.02, 0.07),
-    "shelf": (0.01, 0.06),
-    "cabinet": (0.02, 0.08),
-    "dresser": (0.02, 0.07),
-    "wardrobe": (0.04, 0.12),
-    "lamp": (0.002, 0.02),
-    "rug": (0.08, 0.35),
-    "plant": (0.003, 0.03),
-}
 WEIGHTS = {"mood": 0.55, "space": 0.30, "size": 0.15}
 FAR_MOVE_M = 1.0
 
@@ -44,15 +27,6 @@ def _size_score_against(target_area: float, area: float) -> float:
     # 같은 크기 1.0, 두 배(또는 절반) 0.0. 곱셈 오차라 로그로 잰다
     ratio = max(area, 1e-6) / max(target_area, 1e-6)
     return round(max(0.0, 1.0 - abs(math.log(ratio)) / math.log(2.0)), 3)
-
-
-def _size_score_share(kind: str, area: float, room_area: float) -> float:
-    low, high = AREA_SHARE.get(kind, (0.01, 0.15))
-    share = area / max(room_area, 1e-6)
-    if low <= share <= high:
-        return 1.0
-    edge = low if share < low else high
-    return round(max(0.0, 1.0 - abs(math.log(share / edge)) / math.log(2.5)), 3)
 
 
 def make_scorer(
@@ -65,7 +39,6 @@ def make_scorer(
     base = scene_graph.ensure(layout, solve_new=False)
     room = base["room"]
     W, D = float(room["width_m"]), float(room["depth_m"])
-    room_area = W * D
     kind = scene_graph.object_type(category)
     target = next((o for o in base["objects"] if str(o.get("id")) == str(replace_id)), None) if replace_id else None
     others = [o for o in base["objects"] if o is not target]
@@ -152,12 +125,11 @@ def make_scorer(
             if size < 0.5:
                 reasons.append("교체할 가구보다 크기 차이가 커요")
         else:
-            size = _size_score_share(kind, area, room_area)
-            if size < 0.5:
-                reasons.append("방 크기에 비해 크거나 작아요")
+            # 종류별 '적당한 면적' 표는 두지 않는다. 방에 들어가는지는 공간 점수가 본다
+            size = None
         return {
             "space": round(max(0.0, space), 3),
-            "size": round(size, 3),
+            "size": round(size, 3) if size is not None else None,
             "fits": not collides,
             "dimensions": dims,
             "placement": {"cx": round(float(placed["cx"]), 3), "cy": round(float(placed["cy"]), 3)},
@@ -167,9 +139,23 @@ def make_scorer(
     return score
 
 
+def weighted_total(mood: float | None, fit: dict[str, Any]) -> float:
+    """잰 항목만 가중 평균한다. 크기 비교 대상이 없는(새로 추가) 상품은 무드·공간으로만.
+
+    치수를 몰라 공간을 못 잰 상품은 공간 0점으로 넣어 뒤로 민다.
+    """
+    parts = [("space", fit.get("space") or 0.0)]
+    if mood is not None:
+        parts.append(("mood", mood))
+    if fit.get("size") is not None:
+        parts.append(("size", fit["size"]))
+    weight = sum(WEIGHTS[name] for name, _ in parts)
+    return sum(WEIGHTS[name] * value for name, value in parts) / weight
+
+
 def combine(mood: float, fit: dict[str, Any]) -> float:
     """무드·공간·크기 적합도를 하나로. 들어가지 않는 상품은 무드가 좋아도 뒤로 민다."""
-    total = WEIGHTS["mood"] * mood + WEIGHTS["space"] * (fit["space"] or 0.0) + WEIGHTS["size"] * (fit["size"] or 0.0)
+    total = weighted_total(mood, fit)
     if fit.get("fits") is False:
         total *= 0.4
     return round(total, 4)
