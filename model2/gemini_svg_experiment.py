@@ -187,6 +187,24 @@ def _ensure_not_truncated(response: object) -> None:
         )
 
 
+def default_thinking(model: str) -> types.ThinkingConfig | None:
+    """그림·속성·재분석 요청의 추론 단계. 기본 medium, GEMINI_THINKING_LEVEL로 바꾼다.
+
+    예전에는 최소(MINIMAL)로 보냈지만 MINIMAL을 거절하는 모델이 있고(재시도로 한 번 낭비),
+    3D 높이·모양까지 함께 판단하게 되면서 추론이 품질에 도움이 된다. 추론 토큰이 출력 한도를
+    같이 쓰므로 호출부의 max_output_tokens를 넉넉히 둔다.
+    """
+    level = os.getenv("GEMINI_THINKING_LEVEL", "medium").strip().lower() or "medium"
+    if level in {"off", "minimal"}:
+        return minimal_thinking(model)
+    if "pro" in str(model).lower():
+        return None
+    if str(model).lower().startswith("gemini-3"):
+        mapping = {"low": types.ThinkingLevel.LOW, "medium": types.ThinkingLevel.MEDIUM, "high": types.ThinkingLevel.HIGH}
+        return types.ThinkingConfig(thinking_level=mapping.get(level, types.ThinkingLevel.MEDIUM))
+    return types.ThinkingConfig(thinking_budget={"low": 1024, "medium": 4096, "high": 8192}.get(level, 4096))
+
+
 def minimal_thinking(model: str) -> types.ThinkingConfig | None:
     """thinking을 최소로 줄이는 설정. 모델 세대마다 받는 옵션이 다르다.
 

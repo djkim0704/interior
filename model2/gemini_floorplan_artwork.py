@@ -26,7 +26,7 @@ from typing import Any
 
 from google.genai import types
 
-from .gemini_svg_experiment import _ensure_not_truncated, _extract_svg, _image_part, minimal_thinking
+from .gemini_svg_experiment import _ensure_not_truncated, _extract_svg, _image_part, default_thinking
 
 # 2: 3D로 세우기 위한 도형별 높이 정보(data-z0 등)를 함께 받는다
 ARTWORK_VERSION = "3"  # 3: 가구 이름·사진으로 판단한 실제 높이(data-height-m)도 받는다
@@ -332,10 +332,10 @@ def generate_artwork(
                 response_mime_type="text/plain",
                 temperature=0.3,
                 # 3D 높이 속성이 붙어 그림 하나가 조금 길어졌다
-                max_output_tokens=20000,
-                # 배치는 이미 정해져 있고 그림만 그리는 작업이라 thinking이 필요 없다.
-                # 켜 두면 thinking 토큰이 출력 한도를 먹어 SVG가 잘린다.
-                thinking_config=minimal_thinking(model),
+                # 추론 토큰이 이 한도를 같이 쓴다. 모자라면 SVG가 잘려 그림 전체가 실패한다
+                max_output_tokens=40000,
+                # 도형마다 높이·모양을 판단해야 해서 추론을 켠다(기본 medium)
+                thinking_config=default_thinking(model),
             ),
         )
         if not response.text:

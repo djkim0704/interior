@@ -21,7 +21,7 @@ from google.genai import types
 from PIL import Image
 
 from . import scene_graph
-from .gemini_svg_experiment import _ensure_not_truncated, minimal_thinking
+from .gemini_svg_experiment import _ensure_not_truncated, default_thinking
 
 LOW_CONFIDENCE = 0.6
 MAX_OBJECTS = 6
@@ -176,8 +176,8 @@ def reanalyze(
             response_mime_type="application/json",
             temperature=0.1,
             # pro 계열이면 thinking 토큰도 이 한도를 쓴다
-            max_output_tokens=16384,
-            thinking_config=minimal_thinking(model),
+            max_output_tokens=24576,
+            thinking_config=default_thinking(model),
         ),
     )
     if not response.text:
