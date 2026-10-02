@@ -95,9 +95,6 @@
         <button type="button" class="btn btn-outline-dark d-none" id="floorplan3dEdit">가구 옮기기</button>
         <button type="button" class="btn btn-outline-dark d-none" id="floorplan3dRotate" disabled title="고른 가구를 90° 돌립니다 (R 키)">↻ 회전</button>
         <button type="button" class="btn btn-outline-secondary active" id="floorplan3dGrid">격자 숨기기</button>
-        <button type="button" class="btn btn-outline-secondary active" id="floorplan3dLabels">
-          이름 숨기기
-        </button>
       </div>
 
       <div
@@ -223,10 +220,10 @@
 
 {% block extra_js %}
 <script
-  src="{{ url_for('static', filename='js/floorplan_drag.js', v='20261003-floor-fix') }}"
+  src="{{ url_for('static', filename='js/floorplan_drag.js', v='20261003-no-labels') }}"
 ></script>
 <script
-  src="{{ url_for('static', filename='js/floorplan_edit.js', v='20261003-floor-fix') }}"
+  src="{{ url_for('static', filename='js/floorplan_edit.js', v='20261003-no-labels') }}"
   data-save-url="{{ url_for('save_floorplan_edit') }}"
 ></script>
 <script
@@ -250,7 +247,7 @@
   </script>
   <script
     type="module"
-    src="{{ url_for('static', filename='js/floorplan_3d.js', v='20261003-floor-fix') }}"
+    src="{{ url_for('static', filename='js/floorplan_3d.js', v='20261003-no-labels') }}"
   ></script>
 {% endif %}
 {% endblock %}

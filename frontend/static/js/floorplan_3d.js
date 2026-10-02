@@ -471,7 +471,6 @@ class Floorplan3D {
     this.data = sceneData;
     this.disposed = false;
     this.pickables = [];
-    this.labelsVisible = true;
 
     this._initRenderer();
     this._initScene();
@@ -595,7 +594,6 @@ class Floorplan3D {
   _buildFurniture() {
     const { width_m: w, depth_m: d } = this.data.room;
     this.furnitureGroup = new THREE.Group();
-    this.labelGroup = new THREE.Group();
     this.artGroup = new THREE.Group();
     this.artBoards = [];
     // views_state: "on" 그림을 기다린다 / "off" 그림 기능이 꺼져 기본 모양으로 그린다
@@ -690,22 +688,10 @@ class Floorplan3D {
       wrapper.userData.object = obj;
       this.furnitureGroup.add(wrapper);
       this.pickables.push(wrapper);
-
-      const labelText = (obj.marker
-        ? `${obj.label} #${obj.marker}`
-        : obj.label)
-        + (artState === "drawing" ? " · 그리는 중" : artState === "failed" ? " · 그림 실패" : "");
-      const label = makeLabel(labelText, { accent: Boolean(obj.is_product) });
-      // 자리 표시만 있을 때는 빈 공중에 뜨지 않게 바닥 가까이 둔다
-      const labelY = artState ? 0.35 : obj.base_m + obj.height_m + 0.2;
-      label.position.set(x, labelY, z);
-      label.userData.object = obj;
-      wrapper.userData.label = label;
-      this.labelGroup.add(label);
+      // 가구 이름표는 두지 않는다. 이름·크기는 가구를 짚으면 아래 안내 줄에 나온다
     });
 
     this.scene.add(this.furnitureGroup);
-    this.scene.add(this.labelGroup);
     this.scene.add(this.artGroup);
   }
 
@@ -731,12 +717,6 @@ class Floorplan3D {
     if (!this.grid) return false;
     this.grid.visible = !this.grid.visible;
     return this.grid.visible;
-  }
-
-  toggleLabels() {
-    this.labelsVisible = !this.labelsVisible;
-    this.labelGroup.visible = this.labelsVisible;
-    return this.labelsVisible;
   }
 
   // 편집 모드: 가구를 바닥 위로 끌어 옮기고, 고른 가구를 90°씩 돌린다.
@@ -791,13 +771,9 @@ class Floorplan3D {
       if (this.dragging) {
         const point = this._floorPoint();
         if (!point) return;
-        const { wrapper, offset, label } = this.dragging;
+        const { wrapper, offset } = this.dragging;
         wrapper.position.x = point.x - offset.x;
         wrapper.position.z = point.z - offset.z;
-        if (label) {
-          label.position.x = wrapper.position.x;
-          label.position.z = wrapper.position.z;
-        }
         this.dragging.moved = true;
         return;
       }
@@ -817,7 +793,6 @@ class Floorplan3D {
       const wrapper = this.hovered;
       this.dragging = {
         wrapper,
-        label: wrapper.userData.label,
         offset: new THREE.Vector3(point.x - wrapper.position.x, 0, point.z - wrapper.position.z),
         moved: false,
       };
@@ -1348,16 +1323,6 @@ function init() {
   window.addEventListener("floorplan:viewer-ready", () => {
     if (viewer && data && data.grid_hidden && viewer.grid) viewer.grid.visible = false;
   });
-
-  const labelButton = document.getElementById("floorplan3dLabels");
-  if (labelButton) {
-    labelButton.addEventListener("click", () => {
-      if (!viewer) return;
-      const visible = viewer.toggleLabels();
-      labelButton.classList.toggle("active", visible);
-      labelButton.textContent = visible ? "이름 숨기기" : "이름 표시";
-    });
-  }
 }
 
 if (document.readyState === "loading") {
