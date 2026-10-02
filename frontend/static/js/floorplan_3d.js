@@ -573,7 +573,13 @@ class Floorplan3D {
       roughness: 0.9,
       side: THREE.BackSide,
     });
-    const shell = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), wallMat);
+    // 상자의 바닥면(-y, 재질 순서 3번)은 실제 바닥과 같은 높이라 서로 겹쳐 바닥이 깨져
+    // 보인다(z-fighting). 그 면만 그리지 않는다
+    const hiddenFace = new THREE.MeshBasicMaterial({ visible: false });
+    const shell = new THREE.Mesh(
+      new THREE.BoxGeometry(w, h, d),
+      [wallMat, wallMat, wallMat, hiddenFace, wallMat, wallMat]
+    );
     shell.position.y = h / 2;
     shell.receiveShadow = true;
     this.scene.add(shell);

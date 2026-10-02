@@ -38,20 +38,21 @@
   <div class="room-size-card p-3 mb-4">
     <p class="mb-1 fw-semibold">방 크기 <span class="text-danger fw-normal small">(가로·세로 필수)</span></p>
     <p class="text-muted small mb-3">
-      평면도와 3D의 모든 크기가 이 값을 기준으로 정해집니다. 천장 높이는 비워 두면 사진에서 추정합니다.
+      평면도와 3D의 모든 크기가 이 값을 기준으로 정해집니다. 기본값이 들어 있으니 실제 방 크기로 고쳐 주세요.
+      천장 높이를 비우면 사진에서 추정합니다.
     </p>
     <div class="row g-2">
       <div class="col-4">
         <label class="form-label small mb-1" for="roomWidth">가로 (m)</label>
-        <input type="number" inputmode="decimal" step="0.01" min="0.5" max="30" class="form-control" id="roomWidth" placeholder="예: 3.2" required>
+        <input type="number" inputmode="decimal" step="0.01" min="0.5" max="30" class="form-control" id="roomWidth" value="3.2" placeholder="예: 3.2" required>
       </div>
       <div class="col-4">
         <label class="form-label small mb-1" for="roomDepth">세로 (m)</label>
-        <input type="number" inputmode="decimal" step="0.01" min="0.5" max="30" class="form-control" id="roomDepth" placeholder="예: 4.0" required>
+        <input type="number" inputmode="decimal" step="0.01" min="0.5" max="30" class="form-control" id="roomDepth" value="4.0" placeholder="예: 4.0" required>
       </div>
       <div class="col-4">
         <label class="form-label small mb-1" for="ceilingHeight">천장 (m)</label>
-        <input type="number" inputmode="decimal" step="0.01" min="1.8" max="6" class="form-control" id="ceilingHeight" placeholder="선택">
+        <input type="number" inputmode="decimal" step="0.01" min="1.8" max="6" class="form-control" id="ceilingHeight" value="2.4" placeholder="예: 2.4">
       </div>
     </div>
     <p class="text-muted small mt-2 mb-0">가로는 사진에서 마주 보이는 벽의 길이, 세로는 앞뒤 방향 길이입니다.</p>
