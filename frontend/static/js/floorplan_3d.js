@@ -10,6 +10,7 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { RoundedBoxGeometry } from "three/addons/geometries/RoundedBoxGeometry.js";
+import { SVGLoader } from "three/addons/loaders/SVGLoader.js";
 
 // ── 색 유틸 ────────────────────────────────────────────────
 // 면마다 광원 계산을 하는 대신, 같은 색의 명도만 바꿔 부재를 구분한다.
@@ -759,6 +760,190 @@ function viewTexture(url) {
   return VIEW_TEXTURES.get(url);
 }
 
+// ── 2D 그림(SVG) 돌출 ─────────────────────────────────
+// 2D 평면도의 위에서 본 가구 SVG를 그대로 읽어 도형마다 위로 밀어 올린다. 2D와
+// 같은 그림이라 모양·색이 같고, 3D를 위해 API를 부르지 않는다.
+// 높이는 Gemini가 2D 그림을 그릴 때 도형마다 적은 값(data-z0·z1, 가구 높이 대비
+// 비율)을 쓴다. 그 값이 없는 예전 그림·기본 모양은 아래 규칙으로 정한다.
+const SVG_LOADER = new SVGLoader();
+// 상판 아래에 다리가 보여야 자연스러운 종류. 높이 정보가 없을 때 다리를 붙인다
+const LEGGED_TYPES = new Set(["desk", "table", "low_table", "chair", "desk_chair", "stool", "bench", "nightstand", "vanity"]);
+const DECAL_M = 0.004;
+
+function svgAttr(node, name) {
+  // 값은 도형 자신, 없으면 묶은 <g>에서 물려받는다
+  for (let el = node; el && el.getAttribute; el = el.parentNode) {
+    const value = el.getAttribute(name);
+    if (value !== null && value !== "") return value;
+  }
+  return null;
+}
+
+function svgNumber(node, name) {
+  const value = parseFloat(svgAttr(node, name));
+  return Number.isFinite(value) ? value : null;
+}
+
+function clamp01(value) {
+  return Math.min(1, Math.max(0, value));
+}
+
+// 도형 윤곽을 가구 바닥면 좌표(m, 가구 중심 원점)로 옮긴 Shape 목록
+function solidShapes(path, toLocal) {
+  const out = [];
+  SVGLoader.createShapes(path).forEach((shape) => {
+    const { shape: outline, holes } = shape.extractPoints(10);
+    if (outline.length < 3) return;
+    const mapped = new THREE.Shape(outline.map(toLocal));
+    holes.forEach((hole) => {
+      if (hole.length >= 3) mapped.holes.push(new THREE.Path(hole.map(toLocal)));
+    });
+    out.push(mapped);
+  });
+  return out;
+}
+
+function footprintArea(shapes) {
+  let area = 0;
+  shapes.forEach((shape) => {
+    area += Math.abs(THREE.ShapeUtils.area(shape.getPoints()));
+  });
+  return area;
+}
+
+// 도형 하나를 z0~z1(m) 사이 기둥으로 세운다. soft는 모서리 둥글기, taper는 위로 좁아지는 정도
+function extrude(shapes, z0, z1, color, { soft = 0, taper = 0, opacity = 1 } = {}) {
+  const height = Math.max(z1 - z0, DECAL_M);
+  const group = new THREE.Group();
+  shapes.forEach((shape) => {
+    const box = new THREE.Box2().setFromPoints(shape.getPoints());
+    const size = box.getSize(new THREE.Vector2());
+    const rawBevel = Math.min(soft * Math.min(size.x, size.y) * 0.25, height * 0.45, 0.06);
+    const bevel = rawBevel > 0.002 ? rawBevel : 0;
+    const geometry = new THREE.ExtrudeGeometry(shape, {
+      depth: Math.max(height - 2 * bevel, 0.0005),
+      bevelEnabled: bevel > 0,
+      bevelThickness: bevel,
+      bevelSize: bevel,
+      bevelOffset: -bevel,
+      bevelSegments: 3,
+      curveSegments: 8,
+    });
+    // 도형 평면(x, y)을 바닥(x, z)으로 눕힌다. 돌출 방향은 아래라 높이만큼 올린다
+    geometry.rotateX(Math.PI / 2);
+    geometry.translate(0, z0 + height - bevel, 0);
+    if (taper > 0) {
+      const center = box.getCenter(new THREE.Vector2());
+      const pos = geometry.attributes.position;
+      for (let i = 0; i < pos.count; i += 1) {
+        const t = clamp01((pos.getY(i) - z0) / height);
+        const k = 1 - Math.min(taper, 0.5) * t;
+        pos.setX(i, center.x + (pos.getX(i) - center.x) * k);
+        pos.setZ(i, center.y + (pos.getZ(i) - center.y) * k);
+      }
+      geometry.computeVertexNormals();
+    }
+    const mesh = new THREE.Mesh(
+      geometry,
+      material(color, 1, {
+        side: THREE.DoubleSide,
+        roughness: soft > 0.3 ? 0.9 : 0.7,
+        transparent: opacity < 0.98,
+        opacity,
+      })
+    );
+    mesh.castShadow = opacity > 0.5;
+    mesh.receiveShadow = true;
+    group.add(mesh);
+  });
+  return group;
+}
+
+function buildSolid(obj) {
+  const art = obj.art3d;
+  const [bx0, by0, bx1, by1] = art.box;
+  const sx = obj.w_m / Math.max(bx1 - bx0, 1e-6);
+  const sy = obj.d_m / Math.max(by1 - by0, 1e-6);
+  // 2D와 같은 기준 범위를 바닥면에 맞춘다. 그림의 위쪽(y=0)이 가구 뒤쪽이다
+  const toLocal = (p) => new THREE.Vector2(
+    (p.x - bx0) * sx - obj.w_m / 2,
+    (p.y - by0) * sy - obj.d_m / 2
+  );
+  const H = obj.height_m;
+  const parts = [];
+  SVG_LOADER.parse(art.svg).paths.forEach((path) => {
+    const node = path.userData && path.userData.node;
+    const style = (path.userData && path.userData.style) || {};
+    if (!node) return;
+    const tag = node.nodeName.toLowerCase();
+    if (tag === "line" || tag === "polyline") return;  // 선은 면이 없다
+    if (svgAttr(node, "data-3d") === "skip") return;
+    if (!style.fill || style.fill === "none" || style.fill === "transparent") return;
+    const opacity = (style.opacity ?? 1) * (style.fillOpacity ?? 1);
+    // 아주 옅은 칠은 그림자·빛 같은 효과라 세우지 않는다
+    if (opacity < 0.3) return;
+    const shapes = solidShapes(path, toLocal);
+    if (!shapes.length) return;
+    parts.push({
+      node,
+      shapes,
+      color: "#" + path.color.getHexString(),
+      opacity: Math.min(opacity, 1),
+      area: footprintArea(shapes),
+      z0: svgNumber(node, "data-z0"),
+      z1: svgNumber(node, "data-z1"),
+      soft: clamp01(svgNumber(node, "data-soft") ?? 0),
+      taper: clamp01(svgNumber(node, "data-taper") ?? 0),
+    });
+  });
+  if (!parts.length) return null;
+
+  const group = new THREE.Group();
+  const hinted = parts.some((p) => p.z1 !== null);
+  if (hinted) {
+    // 같은 높이 면이 겹치면 깜박이므로, 나중 도형(2D에서 위에 그린 것)을 아주 조금 올린다
+    parts.forEach((p, i) => {
+      // 값을 빠뜨린 도형은 몸체 기둥이 되지 않게 맨 위 무늬로 붙인다
+      const z1 = clamp01(p.z1 ?? 1) * H;
+      const z0 = p.z1 === null ? z1 : Math.min(clamp01(p.z0 ?? 0) * H, z1);
+      const lift = i * 0.0006;
+      const decal = z1 - z0 < DECAL_M;
+      group.add(extrude(p.shapes, decal ? z1 + lift : z0, (decal ? z1 + DECAL_M : z1) + lift, p.color, p));
+    });
+    return group;
+  }
+
+  // 높이 정보가 없을 때: 가장 큰 도형을 몸체로, 그 뒤 도형은 몸체 위에 얹는다.
+  // 몸체보다 앞에 그린 도형은 대개 바닥 그림자라 뺀다
+  const footprint = obj.w_m * obj.d_m;
+  let baseIndex = parts.findIndex((p) => p.area >= footprint * 0.4);
+  if (baseIndex < 0) baseIndex = parts.reduce((best, p, i) => (p.area > parts[best].area ? i : best), 0);
+  const base = parts[baseIndex];
+  const legged = LEGGED_TYPES.has(obj.type);
+  const slab = legged ? Math.min(0.05, H * 0.12) : H;
+  group.add(extrude(base.shapes, H - slab, H, base.color, { soft: obj.type === "bed" || obj.type === "sofa" ? 0.4 : 0.1 }));
+  if (legged) {
+    const leg = Math.max(0.03, Math.min(obj.w_m, obj.d_m) * 0.06);
+    const inset = leg * 1.2;
+    const legColor = shade(base.color, 0.8);
+    [[-1, -1], [1, -1], [-1, 1], [1, 1]].forEach(([ix, iz]) => {
+      group.add(box(
+        leg, H - slab, leg, material(legColor),
+        ix * (obj.w_m / 2 - inset), 0, iz * (obj.d_m / 2 - inset)
+      ));
+    });
+  }
+  parts.slice(baseIndex + 1).forEach((p, i) => {
+    const lift = (i + 1) * 0.0006;
+    // 중간 크기 도형(쿠션·베개)은 조금 도톰하게, 작은 무늬는 얇게 붙인다.
+    // 몸체만 한 도형은 대개 윗면 테두리·안쪽 면이라 도톰하게 올리면 가구가 높아진다
+    const share = p.area / footprint;
+    const raised = share >= 0.08 && share < 0.6 ? Math.min(0.06, H * 0.12) : DECAL_M;
+    group.add(extrude(p.shapes, H + lift, H + raised + lift, p.color, { soft: raised > DECAL_M ? 0.6 : 0, opacity: p.opacity }));
+  });
+  return group;
+}
+
 // AI 그림을 그리지 않는 종류(gemini_furniture_parts.SKIP_TYPES와 같게 유지).
 // 방 구조에 가까워 기본 모양으로 그린다
 const NO_ART_TYPES = new Set(["door", "window", "rug", "mirror", "curtain", "aircon"]);
@@ -1027,9 +1212,23 @@ class Floorplan3D {
       // AI 입체 그림이 있으면 모형 대신 그림을 보여 준다. 모형은 숨기되 남겨서
       // 마우스 판정(고르기·끌기)과 바닥 그림자 계산에 쓴다
       const views = (this.data.object_views || {})[obj.id];
+      const hasViews = Boolean(views && views.views && views.views.front && !obj.wall_mounted);
+      // 2D 그림을 밀어 올린 입체. 이미지 입체 그림(예전 방식)을 켜 둔 경우에만 그쪽이 우선이다
+      let solid = null;
+      if (!hasViews && obj.art3d && obj.art3d.svg) {
+        try {
+          solid = buildSolid(obj);
+        } catch (error) {
+          console.warn("[floorplan-3d] 2D 그림을 입체로 세우지 못했습니다:", obj.id, error);
+        }
+      }
       const wantsArt = this.awaitArt && !obj.wall_mounted && !NO_ART_TYPES.has(obj.type);
       let artState = "";
-      if (wantsArt && !(views && views.views && views.views.front)) {
+      if (solid) {
+        // 숨긴 모형은 고르기·끌기 판정에만 쓴다
+        node.visible = false;
+        wrapper.add(solid);
+      } else if (wantsArt && !hasViews) {
         // 기본 모양은 보여 주지 않는다. 숨긴 모형은 고르기·끌기 판정에만 쓴다
         node.visible = false;
         artState = failedViews.has(obj.id) ? "failed" : "drawing";
@@ -1640,8 +1839,9 @@ function init() {
     if (!viewsUrl || viewsBusy || !data || data.views_state === "off") return;
     const have = data.object_views || {};
     // 그림이 없거나 아직 네 방향이 다 안 그려진 가구가 있으면 요청한다
+    // 2D 그림으로 세운 가구는 이미지 입체 그림이 필요 없다
     const missing = (data.objects || []).filter(
-      (o) => !o.wall_mounted && (!have[o.id] || have[o.id].complete === false)
+      (o) => !o.wall_mounted && !o.art3d && (!have[o.id] || have[o.id].complete === false)
     );
     if (!missing.length) return;
     viewsBusy = true;

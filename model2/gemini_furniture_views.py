@@ -15,7 +15,7 @@
   - 실패한 가구는 그림 없이 입체 모형(부품 목록 또는 파라메트릭)으로 그려진다.
 
 설정(.env)
-  GEMINI_FURNITURE_VIEWS          1이면 사용(기본 1)
+  GEMINI_FURNITURE_VIEWS          1이면 사용(기본 0)
   GEMINI_FURNITURE_IMAGE_MODEL    비우면 GEMINI_IMAGE_MODEL
   FURNITURE_VIEW_COUNT            4(기본) 또는 1
 """
@@ -169,7 +169,8 @@ TURNS = {
 
 
 def enabled() -> bool:
-    return os.getenv("GEMINI_FURNITURE_VIEWS", "1").strip().lower() not in {"0", "false", "no", "off"}
+    # 기본은 끈다. 3D는 2D 평면도 SVG를 밀어 올려 세우므로(art_solid) 이미지 호출이 필요 없다
+    return os.getenv("GEMINI_FURNITURE_VIEWS", "0").strip().lower() not in {"0", "false", "no", "off"}
 
 
 def view_names() -> tuple[str, ...]:

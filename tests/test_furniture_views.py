@@ -67,6 +67,13 @@ class CutOutTests(unittest.TestCase):
 
 class GenerateViewsTests(unittest.TestCase):
     def setUp(self) -> None:
+        import os
+        from unittest import mock
+
+        # 기본은 꺼져 있다(3D는 2D SVG 돌출). 켰을 때의 동작을 확인한다
+        patcher = mock.patch.dict(os.environ, {"GEMINI_FURNITURE_VIEWS": "1"})
+        patcher.start()
+        self.addCleanup(patcher.stop)
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.cache = Path(self.tmp.name)

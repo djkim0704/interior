@@ -278,6 +278,23 @@ def layout_metrics(graph: dict[str, Any]) -> dict[str, float]:
     }
 
 
+def strip_only3d(markup: str) -> str:
+    """3D 전용 부품(data-only3d: 위에서는 가려 안 보이는 다리 등)을 뺀 2D용 조각."""
+    if "data-only3d" not in markup:
+        return markup
+    try:
+        root = svg_geometry.ET.fromstring(f'<g xmlns="http://www.w3.org/2000/svg">{markup}</g>')
+    except svg_geometry.ET.ParseError:
+        return markup
+    for parent in list(root.iter()):
+        for child in list(parent):
+            if child.get("data-only3d") in {"1", "true"}:
+                parent.remove(child)
+    inner = "".join(svg_geometry.ET.tostring(item, encoding="unicode") for item in root)
+    ns = "http://www.w3.org/2000/svg"
+    return inner.replace(f' xmlns:ns0="{ns}"', "").replace("ns0:", "").replace(f' xmlns="{ns}"', "")
+
+
 def _artwork_box(markup: str) -> tuple[float, float, float, float] | None:
     """Gemini 그림 조각이 실제로 그려진 범위. 이 범위를 가구 바닥면에 맞춘다."""
     try:
@@ -349,6 +366,8 @@ def render_svg(
         cx, cy = fx + float(obj["cx"]) * px, fy + float(obj["cy"]) * px
         color = _color(obj)
         drawn = art_objects.get(str(obj["id"]))
+        if drawn:
+            drawn = {**drawn, "markup": strip_only3d(str(drawn["markup"]))}
         art_box = _artwork_box(drawn["markup"]) if drawn else None
         if kind == "door":
             # 문·창은 3D와 같은 두께(d)로 그린다. 틀을 굵게 그리면 2D·3D 외곽이 달라진다

@@ -333,15 +333,20 @@ venv\Scripts\python.exe -m py_compile backend/app.py   # 저장 직후 확인
 > 가질 수 있다. 모양을 못 받은 가구는 `PARAMETRIC` 빌더(상품 형태 속성 반영)로 그린다.
 > 아래 타입 단위 설계도(`generate_furniture_parts`)는 이전 방식으로 남아 있다.
 >
-> **기본 표시는 AI 입체 그림이다**(`model2/gemini_furniture_views.py`, `POST /api/scene/views`).
-> 이미지 모델이 가구마다 앞·오른쪽·뒤·왼쪽 4방향 그림을 그리고(옆·뒤는 앞 그림을 보여 주며
-> 같은 가구를 돌린 모습으로), 흰 배경을 지운 PNG를 three.js가 가구 자리에 세운다. 판은
-> 카메라를 향하고 보는 방향에 맞는 그림으로 바뀐다. 숨긴 모형으로 고르기·끌기를 한다.
-> 서버는 한 번에 두 가구씩 그리고 남은 수를 돌려주며, 화면은 다 그릴 때까지 다시 부른다.
-> 그림을 기다리는 가구는 기본 모양 대신 바닥 자리 표시와 "그리는 중" 라벨로 보이고, 앞 그림이
-> 오면 바로 그림으로 바뀐다. 끝내 못 그린 가구는 서버가 `failed`로 알려 "그림 실패"로 남는다.
-> 기본 모양(부품 모형·파라메트릭)은 그림 기능이 꺼졌을 때(`enabled: false`)와 문·창문·러그 등
-> 그림 대상이 아닌 종류에만 쓴다.
+> **기본 표시는 2D 그림 돌출이다**(`model2/art_solid.py`, `floorplan_3d.js`의 `buildSolid`).
+> 2D 평면도의 위에서 본 가구 SVG를 three.js `SVGLoader`로 읽어 도형마다 위로 밀어 올린다.
+> 같은 SVG라 2D와 모양·색이 같고, 3D를 위한 API 호출이 없다.
+> - 도형별 높이는 2D 그림을 그릴 때 Gemini가 함께 적는다(`ARTWORK_PROMPT`, `ARTWORK_VERSION` 2).
+>   `data-z0`·`data-z1`(가구 높이 대비 비율), `data-soft`(모서리 둥글기), `data-taper`(위로 좁아짐),
+>   `data-only3d`(위에서 안 보이는 다리 등, 2D에서는 뺀다), `data-3d="skip"`(그림자·빛 효과).
+> - 높이 정보가 없는 예전 그림과 상품의 기본 모양은 화면이 규칙으로 정한다: 가장 큰 도형이 몸체,
+>   뒤 도형은 그 위에 얹고, 책상·의자류는 상판과 다리로 세운다.
+> - SVGLoader는 `url(#…)` 칠을 못 읽어 서버가 그라데이션을 대표색으로 바꿔 넘긴다. 맞춤 범위(`box`)는
+>   2D 렌더러와 같은 값이라 2D·3D 외곽이 같다.
+> - 문·창문은 3D에 세우지 않는다.
+>
+> 이미지 입체 그림(`model2/gemini_furniture_views.py`, `POST /api/scene/views`)은 예전 방식으로 남아
+> 있고 기본으로 꺼져 있다(`GEMINI_FURNITURE_VIEWS=0`). 켜면 가구당 이미지 4장을 그려 판으로 세운다.
 
 three.js 의 가구 모양은 원래 `floorplan_3d.js` 의 `BUILDERS` 에 손으로 짜
 넣은 상자 조합이다(27종). 종류가 늘수록 품질 편차가 커서, Gemini 에게 형태를

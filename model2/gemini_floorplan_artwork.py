@@ -28,7 +28,8 @@ from google.genai import types
 
 from .gemini_svg_experiment import _ensure_not_truncated, _extract_svg, _image_part, minimal_thinking
 
-ARTWORK_VERSION = "1"
+# 2: 3D로 세우기 위한 도형별 높이 정보(data-z0 등)를 함께 받는다
+ARTWORK_VERSION = "2"
 FAILURE_COOLDOWN_SECONDS = 10 * 60
 SVG_NS = "http://www.w3.org/2000/svg"
 # 그림 조각 크기(px). 가구 실측 비율을 유지하되 긴 변을 이 정도로 맞춰 그리게 한다.
@@ -56,6 +57,27 @@ Each object has its own local drawing box, given as W x H pixels:
   wall). y=H is the front, where a person approaches it.
 - Do not draw labels or text. Do not draw the room floor inside object boxes.
 
+The same artwork is also extruded into a 3D model, so describe the height of
+every part. Put these attributes on each drawn element (or on a <g> that
+groups elements sharing the same values):
+- data-z0 / data-z1: bottom and top of that part as a FRACTION of the object's
+  total height (0 = floor, 1 = its highest point; total height is given per
+  object in metres). Examples: sofa seat base 0-0.5, back rest 0-1, arms
+  0-0.75, seat cushions 0.5-0.62; bed frame 0-0.45, mattress 0.45-0.8,
+  pillows 0.8-0.92, headboard 0-1; desk/table top 0.94-1; chair seat
+  0.48-0.53, chair back 0.53-1; wardrobe or shelf body 0-1.
+- Surface details lying on a part (stitching, wood grain, folds, patterns,
+  book spines seen from above) use z0 = z1 = the top of that part.
+- data-soft: 0 to 1, how rounded the edges are (0 crisp wood or metal,
+  0.5 upholstered seat, 1 pillow or cushion).
+- data-taper: 0 to 0.5, how much narrower the top is than the bottom (lamp
+  shades, tapered legs). Omit when 0.
+- data-only3d="1": structural parts hidden under the top surface that must
+  exist in 3D but are not visible from above: table and chair legs, bed legs,
+  the pedestal of a stool or lamp. Draw them at their real top-down position;
+  they are removed from the 2D plan.
+- data-3d="skip": pure lighting effects (soft shadows, glows, highlights).
+
 Return ONLY one SVG document, no Markdown, structured exactly like this:
 <svg xmlns="http://www.w3.org/2000/svg">
   <defs>
@@ -71,9 +93,9 @@ Technical requirements:
 - Self-contained SVG only. No external images, URLs, fonts, scripts,
   foreignObject, animation or embedded raster data.
 - Prefer compact paths, reusable gradients and patterns. Keep the whole
-  document under 10,000 output tokens.
+  document under 12,000 output tokens.
 
-OBJECTS (id, kind, Korean name, W x H, color / material / pattern hints):
+OBJECTS (id, kind, Korean name, W x H, total height, color / material / pattern hints):
 """.strip()
 
 
@@ -113,6 +135,14 @@ def cache_key(image_path: Path, graph: dict[str, Any], model: str) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:24]
 
 
+def _height_m(obj: dict[str, Any]) -> float:
+    """3D에서 쓰는 높이와 같은 값(floorplan_3d.TYPE_PRESETS)을 알려 준다."""
+    from .floorplan_3d import FALLBACK_PRESET, TYPE_PRESETS
+
+    preset = TYPE_PRESETS.get(str(obj.get("type") or "").lower(), FALLBACK_PRESET)
+    return float(obj.get("h_m") or preset["height_m"])
+
+
 def _prompt(graph: dict[str, Any]) -> str:
     lines = []
     for obj in _targets(graph):
@@ -122,7 +152,8 @@ def _prompt(graph: dict[str, Any]) -> str:
             for key in ("color", "material", "pattern")
             if obj.get(key)
         )
-        lines.append(f'- {obj["id"]} | {obj.get("type")} | {obj.get("label")} | {w} x {h} | {hints or "-"}')
+        height = _height_m(obj)
+        lines.append(f'- {obj["id"]} | {obj.get("type")} | {obj.get("label")} | {w} x {h} | {height:.2f} m | {hints or "-"}')
     return ARTWORK_PROMPT + "\n" + "\n".join(lines)
 
 
@@ -273,7 +304,8 @@ def generate_artwork(
             config=types.GenerateContentConfig(
                 response_mime_type="text/plain",
                 temperature=0.3,
-                max_output_tokens=16000,
+                # 3D 높이 속성이 붙어 그림 하나가 조금 길어졌다
+                max_output_tokens=20000,
                 # 배치는 이미 정해져 있고 그림만 그리는 작업이라 thinking이 필요 없다.
                 # 켜 두면 thinking 토큰이 출력 한도를 먹어 SVG가 잘린다.
                 thinking_config=minimal_thinking(model),

@@ -344,6 +344,20 @@ def convert_graph_object(obj: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _load_artwork(graph: dict[str, Any]) -> dict[str, Any] | None:
+    name = str(graph.get("artwork_file") or "")
+    if not name:
+        return None
+    import json
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[1] / "frontend" / "static" / "generated" / Path(name).name
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
 def _fill_art_style(graph: dict[str, Any]) -> None:
     """2D 그림의 바닥·벽 스타일이 없는 배치(기능 추가 전에 저장된 편집본 등)를 채운다.
 
@@ -407,9 +421,21 @@ def build_scene_from_graph(
         "floor_pattern_svg": (room_in.get("art_style") or {}).get("floor_pattern_svg"),
         "floor_pattern_id": (room_in.get("art_style") or {}).get("floor_pattern_id"),
     }
+    from .art_solid import object_solid
+
+    # 가구 모양은 2D 평면도의 SVG를 밀어 올려 세운다. 2D와 같은 그림이라 모양·색이
+    # 같고, 3D를 위해 API를 따로 부르지 않는다
+    artwork = _load_artwork(graph)
+    objects = []
+    for obj in graph["objects"]:
+        converted = convert_graph_object(obj)
+        solid = object_solid(obj, artwork)
+        if solid:
+            converted["art3d"] = solid
+        objects.append(converted)
     return {
         "room": room,
-        "objects": [convert_graph_object(obj) for obj in graph["objects"]],
+        "objects": objects,
         "placement": "scene_graph",
         "known_types": sorted(TYPE_PRESETS),
     }
