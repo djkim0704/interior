@@ -92,11 +92,31 @@ def flatten_paints(markup: str, defs: str) -> str:
     # 첫 참조만 본다. Gemini가 가끔 url(#a, url(#b)) 같은 잘못된 값을 쓴다
     markup = re.sub(r'\b(fill|stroke)="\s*url\(#([^)",\s]+)[^"]*"', paint, markup)
     # style="fill:url(#…)" 형태
-    return re.sub(
+    markup = re.sub(
         r"(fill|stroke)\s*:\s*url\(#([^)]+)\)",
         lambda m: f"{m.group(1)}:{colors.get(m.group(2), '#b7aa98')}",
         markup,
     )
+    return _dedupe_attributes(markup)
+
+
+def _dedupe_attributes(markup: str) -> str:
+    """한 요소에 같은 속성이 두 번 들어가면 XML이 깨진다(Gemini가 이미 data-3d="skip"을
+    적은 그림자에 위에서 또 붙이는 경우). 태그마다 처음 것만 남긴다."""
+
+    def tag(match: re.Match[str]) -> str:
+        seen: set[str] = set()
+
+        def attr(found: re.Match[str]) -> str:
+            name = found.group(1)
+            if name in seen:
+                return ""
+            seen.add(name)
+            return found.group(0)
+
+        return re.sub(r'\s([\w:-]+)="[^"]*"', attr, match.group(0))
+
+    return re.sub(r"<[^<>]+>", tag, markup)
 
 
 def _icon_parts(svg_text: object) -> tuple[str, str] | None:
@@ -149,6 +169,8 @@ def object_solid(obj: dict[str, Any], artwork: dict[str, Any] | None) -> dict[st
         source = "code"
     box = scene_render_2d._artwork_box(scene_render_2d.strip_only3d(markup))
     if box is None:
+        # 조용히 빠지면 3D에 자리 표시만 남아 원인을 찾기 어렵다
+        print(f"[art-solid] {obj.get('id')} SVG를 해석하지 못해 3D로 세우지 않습니다.")
         return None
     return {
         "svg": f'<svg xmlns="{SVG_NS}">{markup}</svg>',

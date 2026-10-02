@@ -45,6 +45,16 @@ class ObjectSolidTests(unittest.TestCase):
         self.assertNotIn("data-only3d", markup2d)
         self.assertEqual(solid["box"], [round(v, 3) for v in scene_render_2d._artwork_box(markup2d)])
 
+    def test_shadow_already_marked_skip_is_not_duplicated(self) -> None:
+        # Gemini가 이미 data-3d="skip"을 적은 그림자에 또 붙이면 XML이 깨져 가구가 3D에서 빠졌다
+        art = {"defs": ARTWORK["defs"], "objects": {"sofa_1": {"markup": (
+            '<ellipse cx="50" cy="50" rx="50" ry="50" fill="url(#gx-shadow-grad)" data-3d="skip"/>'
+            '<rect x="10" y="10" width="80" height="80" fill="#8c5d38" data-z0="0.9" data-z1="1"/>'
+        )}}}
+        solid = art_solid.object_solid(SOFA, art)
+        self.assertIsNotNone(solid)
+        self.assertEqual(solid["svg"].count('data-3d="skip"'), 1)
+
     def test_malformed_paint_reference(self) -> None:
         art = {"defs": ARTWORK["defs"], "objects": {"sofa_1": {"markup": '<rect width="10" height="10" fill="url(#gx-cush, url(#x))"/>'}}}
         self.assertNotIn("url(", art_solid.object_solid(SOFA, art)["svg"])
