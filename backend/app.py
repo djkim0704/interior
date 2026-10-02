@@ -89,6 +89,7 @@ from mood_search_v1 import (
 
 from mood_search_v1.config import (
     MOOD_LIBRARY_DIR,
+    resolve_library_image,
 )
 
 
@@ -1375,15 +1376,18 @@ def mood_library_image(
 ):
     """생성된 무드 라이브러리 이미지 파일을 안전하게 전달한다."""
     from flask import (
-        send_from_directory,
+        send_file,
     )
 
-    return send_from_directory(
-        str(
-            MOOD_LIBRARY_DIR
-        ),
-        filename,
-    )
+    path = resolve_mood_image(filename)
+    if path is None:
+        abort(404)
+    return send_file(str(path))
+
+
+def resolve_mood_image(relative):
+    """무드 라이브러리 사진의 실제 파일(사본이 없으면 images/final 원본). 검색 코드와 같은 규칙."""
+    return resolve_library_image(relative)
 
 
 # ──────────────────────────────────────────────────────
@@ -2988,30 +2992,10 @@ def product_selection():
             or ""
         ).strip()
         if selected_relative_path:
-            try:
-                library_root = (
-                    MOOD_LIBRARY_DIR.resolve()
-                )
-                candidate_image_path = (
-                    MOOD_LIBRARY_DIR
-                    / selected_relative_path
-                ).resolve()
-                candidate_image_path.relative_to(
-                    library_root
-                )
-                if candidate_image_path.is_file():
-                    selected_image_path = (
-                        candidate_image_path
-                    )
-            except (
-                OSError,
-                ValueError,
-            ) as image_path_exc:
-                print(
-                    "[product-recommendation] "
-                    "선택 이미지 경로 확인 실패: "
-                    f"{image_path_exc}"
-                )
+            # 사진 사본이 없으면 원본(images/final)에서 찾는다
+            selected_image_path = resolve_mood_image(
+                selected_relative_path
+            )
 
         if (
             selected_image_path
@@ -4865,17 +4849,8 @@ def recommendation_context():
         [str(tag) for tag in session.get("style_tags", [])],
         str(session.get("selected_mood_image", "")),
     )
-    selected_image_path = None
-    relative = str(session.get("selected_mood_image", "") or "").strip()
-    if relative:
-        try:
-            root = MOOD_LIBRARY_DIR.resolve()
-            candidate = (MOOD_LIBRARY_DIR / relative).resolve()
-            candidate.relative_to(root)
-            if candidate.is_file():
-                selected_image_path = candidate
-        except (OSError, ValueError):
-            selected_image_path = None
+    # 사진 사본이 없으면 원본(images/final)에서 찾는다
+    selected_image_path = resolve_mood_image(session.get("selected_mood_image", ""))
     if selected_image_path and os.getenv("GEMINI_MOOD_ANALYSIS_ENABLED", "1").strip().lower() not in {"0", "false", "off"}:
         mood_analysis = furniture_recommender.enrich_mood_analysis_with_gemini(
             mood_analysis,

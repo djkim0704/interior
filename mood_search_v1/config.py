@@ -95,3 +95,41 @@ SLUG_MAP = {
     "luxury modern studio apartment": "luxury_modern",
     "cute pastel room decor": "cute_pastel",
 }
+
+
+def resolve_library_image(relative) -> Path | None:
+    """무드 라이브러리 사진의 실제 파일. 사본이 없으면 원본(images/final)에서 찾는다.
+
+    저장소에는 라이브러리의 임베딩·색인만 올리고 사진 사본(약 200MB)은 올리지 않는다.
+    clone한 사람은 사진만 images/final에 넣으면 임베딩을 다시 만들지 않고 바로 쓴다.
+      <무드>/gallery/<파일>  → images/final/<파일>
+      <무드>/cover.jpg       → images/final/<meta.json의 cover_source>
+    라이브러리 밖을 가리키는 경로는 받지 않는다.
+    """
+    import json
+    import os
+
+    relative = str(relative or "").strip().replace("\\", "/")
+    if not relative:
+        return None
+    try:
+        candidate = (MOOD_LIBRARY_DIR / relative).resolve()
+        candidate.relative_to(MOOD_LIBRARY_DIR.resolve())
+    except (OSError, ValueError):
+        return None
+    if candidate.is_file():
+        return candidate
+    parts = Path(relative).parts
+    source_name = None
+    if len(parts) == 3 and parts[1] == "gallery":
+        source_name = parts[2]
+    elif len(parts) == 2 and parts[1] == "cover.jpg":
+        try:
+            meta = json.loads((MOOD_LIBRARY_DIR / parts[0] / "meta.json").read_text(encoding="utf-8"))
+            source_name = meta.get("cover_source")
+        except (OSError, ValueError):
+            source_name = None
+    if not source_name:
+        return None
+    source = IMAGE_ROOT / os.path.basename(str(source_name))
+    return source if source.is_file() else None

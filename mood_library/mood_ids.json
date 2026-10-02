@@ -1,0 +1,65 @@
+[
+  {
+    "id": "monochrome_minimal_c06",
+    "mood_id": "monochrome_minimal",
+    "mood_name_ko": "모노톤 미니멀",
+    "mood_name_en": "monochrome minimalist interior",
+    "search_text": "모노톤 미니멀 | monochrome minimalist interior | 모노톤 미니멀 무드의 원룸 인테리어 레퍼런스 | monochrome, minimal | monochrome, minimal"
+  },
+  {
+    "id": "modern_grey_c01",
+    "mood_id": "modern_grey",
+    "mood_name_ko": "모던 그레이",
+    "mood_name_en": "modern grey industrial studio",
+    "search_text": "모던 그레이 | modern grey industrial studio | 모던 그레이 무드의 원룸 인테리어 레퍼런스 | modern, grey | modern, grey"
+  },
+  {
+    "id": "minimal_white_c02",
+    "mood_id": "minimal_white",
+    "mood_name_ko": "미니멀 화이트",
+    "mood_name_en": "minimal white scandinavian room",
+    "search_text": "미니멀 화이트 | minimal white scandinavian room | 미니멀 화이트 무드의 원룸 인테리어 레퍼런스 | minimal, white | minimal, white"
+  },
+  {
+    "id": "luxury_modern_c03",
+    "mood_id": "luxury_modern",
+    "mood_name_ko": "럭셔리 모던",
+    "mood_name_en": "luxury modern studio apartment",
+    "search_text": "럭셔리 모던 | luxury modern studio apartment | 럭셔리 모던 무드의 원룸 인테리어 레퍼런스 | luxury, modern | luxury, modern"
+  },
+  {
+    "id": "vintage_retro_c08",
+    "mood_id": "vintage_retro",
+    "mood_name_ko": "빈티지 레트로",
+    "mood_name_en": "vintage retro small room",
+    "search_text": "빈티지 레트로 | vintage retro small room | 빈티지 레트로 무드의 원룸 인테리어 레퍼런스 | vintage, retro | vintage, retro"
+  },
+  {
+    "id": "plant_green_c04",
+    "mood_id": "plant_green",
+    "mood_name_ko": "플랜트 그린",
+    "mood_name_en": "plant-filled green interior",
+    "search_text": "플랜트 그린 | plant-filled green interior | 플랜트 그린 무드의 원룸 인테리어 레퍼런스 | plant, green | plant, green"
+  },
+  {
+    "id": "cute_pastel_c00",
+    "mood_id": "cute_pastel",
+    "mood_name_ko": "파스텔 귀여운",
+    "mood_name_en": "cute pastel room decor",
+    "search_text": "파스텔 귀여운 | cute pastel room decor | 파스텔 귀여운 무드의 원룸 인테리어 레퍼런스 | cute, pastel | cute, pastel"
+  },
+  {
+    "id": "natural_wood_c07",
+    "mood_id": "natural_wood",
+    "mood_name_ko": "내추럴 우드",
+    "mood_name_en": "natural wood tone small room",
+    "search_text": "내추럴 우드 | natural wood tone small room | 내추럴 우드 무드의 원룸 인테리어 레퍼런스 | natural, wood | natural, wood"
+  },
+  {
+    "id": "warm_cozy_c05",
+    "mood_id": "warm_cozy",
+    "mood_name_ko": "따뜻한 코지 원룸",
+    "mood_name_en": "warm cozy studio apartment interior",
+    "search_text": "따뜻한 코지 원룸 | warm cozy studio apartment interior | 따뜻한 코지 원룸 무드의 원룸 인테리어 레퍼런스 | warm, cozy | warm, cozy"
+  }
+]

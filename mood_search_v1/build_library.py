@@ -81,6 +81,9 @@ def run_build_library() -> dict:
             "gallery_count": len(group),
             "color_palette": palette,
             "confidence": label_info.get("confidence"),
+            # 사진 사본은 저장소에 올리지 않는다. 사본이 없을 때 원본(images/final)에서
+            # 대표 사진을 찾을 수 있게 원본 파일 이름을 남긴다
+            "cover_source": Path(str(reps.iloc[0]["relative_path"])).name,
         }
         (mood_dir / "meta.json").write_text(
             json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"

@@ -118,15 +118,19 @@ http://127.0.0.1:5000 에서 열린다. `debug=True`라 `.py` 수정은 자동 �
 |---|---|---|
 | `images/final/` | 219MB | 원본 데이터셋. 샘플 3장만 커밋됨 |
 | `data/` | 17MB | `mood_search_v1`의 embedding → clustering → labeling |
-| `mood_library/` | 210MB | `mood_search_v1.run_build_library` |
+| `mood_library/`의 사진 사본 | 207MB | `images/final`과 같은 사진. 없으면 원본에서 찾는다 |
 | `frontend/static/generated/` | 런타임 | 앱이 실행하며 자동 생성 |
 
-### 무드 라이브러리는 이미지만 채운다고 생기지 않는다
+### 무드 라이브러리: 임베딩은 커밋돼 있다, 사진만 넣으면 된다
 
-`images/final/`에 사진을 넣어도 `/mood-search`는 계속 500을 뱉는다. 검색이
-읽는 건 원본이 아니라 `mood_library/index.json`이고, 그건 파이프라인을
-돌려야 만들어진다. 폴더가 없어서가 아니라 **내용물이 없어서** 나는 오류라
-빈 폴더를 만들어도 해결되지 않는다.
+`mood_library/`의 임베딩·색인(`index.json`, `*.npy`, `meta.json` 등 약 3MB)은 저장소에 있다.
+만드는 데 오래 걸리는 부분이라 올려 두었다. clone한 사람은 **원본 사진을 `images/final/`에
+넣기만 하면** 기동 즉시 무드 검색이 된다(임베딩을 다시 만들지 않는다).
+
+- 라이브러리 안의 사진 사본(`<무드>/gallery/*.jpg`, `cover.jpg`)은 커밋하지 않는다. 사본이
+  없으면 `mood_search_v1.config.resolve_library_image`가 `images/final/`에서 같은 이름의
+  사진을 찾는다. 대표 사진은 `meta.json`의 `cover_source`로 찾는다.
+- `index.json`이 없을 때만 기동 시 전체를 다시 만든다(로컬 CLIP, Gemini 0회, CPU 약 4~5분):
 
 ```
 images/final/  →  run_embedding()   →  data/
@@ -135,16 +139,8 @@ images/final/  →  run_embedding()   →  data/
                →  run_build_library()  →  mood_library/
 ```
 
-`backend/app.py`가 기동할 때 `index.json`이 없으면 이 네 단계를 자동으로
-돌린다. 그래서 보통은 서버를 한 번 띄우면 끝이고, 첫 기동만 오래 걸린다.
-
-- **네 단계 모두 로컬 CLIP만 쓴다. Gemini 호출 0회**라 RPD와 무관하다
-- 이미지 1265장 기준 **CPU로 약 4.4분**(GPU 불필요)
-- `mood_library/`는 이미지를 복사하므로 디스크가 원본 크기만큼 더 필요하다
-- `images/final/`이 비어 있으면 건너뛰고 안내만 남긴다. 무드 검색만 죽고
-  평면도·상품 추천은 정상 동작한다
-- 이미지를 더 넣어도 자동 재빌드되지 않는다. 갱신하려면 `mood_library/`를
-  지우고 다시 띄운다
+- 사진을 새로 추가해도 자동 재빌드되지 않는다. 새 사진까지 검색되게 하려면 `mood_library/`를
+  지우고 다시 띄운 뒤, 바뀐 임베딩·색인을 커밋한다.
 
 ---
 
