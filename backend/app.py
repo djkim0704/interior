@@ -4203,13 +4203,15 @@ def search_products():
         # 고른 종류가 있으면 이 방에 실제로 맞는지 함께 보여 준다(항목 21).
         # 직접 검색은 무드 점수가 없으니 공간·크기만 합친다
         item_type = str(request.args.get("type") or "")
-        mood_scores = search_mood_scores(products, item_type)
         layout, replace_id = (
             fit_layout_and_target(request.args.get("replace_id"))
             if item_type in PURCHASE_LABELS
             else (None, None)
         )
         if layout is not None:
+            # 무드 점수는 적합도를 낼 때만 계산한다. CLIP을 켜고 썸네일을 받는 데 수 초가
+            # 걸리므로, 쓰지 않을 단순 검색에서는 하지 않는다
+            mood_scores = search_mood_scores(products, item_type)
             scorer = spatial_fit.make_scorer(layout, item_type, replace_id=replace_id)
             for product in products:
                 try:
@@ -4768,12 +4770,14 @@ def search_mood_scores(products, item_type):
         print(f"[search-products] 무드 정보를 만들지 못했습니다: {exc}")
         return {}
     mood_scores = mood_analysis.get("mood_scores", {})
-    text_scores = furniture_recommender.normalize_scores(
-        [
-            furniture_recommender.calculate_text_style_score(product, observed, mood_scores)
-            for product in products
-        ]
-    )
+    raw_text = [
+        furniture_recommender.calculate_text_style_score(product, observed, mood_scores)
+        for product in products
+    ]
+    # 점수가 모두 같으면(무드 정보가 없을 때 등) 정규화가 전부 1.0을 돌려준다. 그대로
+    # 쓰면 모든 상품의 무드가 100%로 보이므로, 이때는 텍스트 점수를 쓰지 않는다
+    tied = max(raw_text) - min(raw_text) < 1e-9
+    text_scores = [None] * len(products) if tied else furniture_recommender.normalize_scores(raw_text)
     mood_text = (
         furniture_recommender.mood_clip_text(item_type, mood_scores)
         if item_type
@@ -4787,7 +4791,14 @@ def search_mood_scores(products, item_type):
                 clip = image_service.similarity(selected_image_path, str(product["image"]))
             elif mood_text:
                 clip = image_service.text_similarity(mood_text, str(product["image"]))
-        score = text_score if clip is None else 0.6 * clip + 0.4 * text_score
+        if clip is None and text_score is None:
+            continue  # 구분할 근거가 없으면 무드 점수를 매기지 않는다(막대를 숨긴다)
+        if clip is None:
+            score = text_score
+        elif text_score is None:
+            score = clip
+        else:
+            score = 0.6 * clip + 0.4 * text_score
         result[id(product)] = round(float(score), 3)
     return result
 

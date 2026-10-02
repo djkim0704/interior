@@ -168,5 +168,18 @@ class GenerateViewsTests(unittest.TestCase):
         self.assertNotIn("whole real room", client.models.calls[0][0])
 
 
+    def test_nested_def_references_are_followed(self) -> None:
+        artwork = {
+            "defs": '<linearGradient id="gx-wood"><stop offset="0" stop-color="#8a5a3c"/></linearGradient>'
+                    '<pattern id="gx-quilt" width="10" height="10"><rect width="10" height="10" fill="url(#gx-wood)"/></pattern>'
+                    '<linearGradient id="gx-other"/>',
+            "objects": {"bed_0": {"markup": '<rect width="200" height="90" fill="url(#gx-quilt)"/>', "w": 200, "h": 90}},
+        }
+        svg = gfv.object_svg(artwork, "bed_0")
+        self.assertIn('id="gx-quilt"', svg)
+        self.assertIn('id="gx-wood"', svg)  # 무늬가 쓰는 그라데이션까지 따라간다
+        self.assertNotIn("gx-other", svg)
+
+
 if __name__ == "__main__":
     unittest.main()

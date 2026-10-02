@@ -143,11 +143,20 @@ def _referenced_defs(defs: str, markup: str) -> str:
         root = ET.fromstring(f'<defs xmlns="http://www.w3.org/2000/svg">{defs}</defs>')
     except ET.ParseError:
         return ""
+    by_id = {child.get("id"): child for child in list(root) if child.get("id")}
+    # 정의가 다른 정의를 다시 참조할 수 있다(그라데이션을 쓰는 무늬 등). 끝까지 따라가야
+    # 참조된 채우기가 빠지지 않는다. href 상속은 보안 검사(_extract_svg)가 막아서 오지 않는다
+    wanted = list(used)
+    seen: set[str] = set()
     keep = []
-    for child in list(root):
-        if child.get("id") in used:
-            text = ET.tostring(child, encoding="unicode")
-            keep.append(text.replace(' xmlns:ns0="http://www.w3.org/2000/svg"', "").replace("ns0:", "").replace(' xmlns="http://www.w3.org/2000/svg"', ""))
+    while wanted:
+        current = wanted.pop()
+        if current in seen or current not in by_id:
+            continue
+        seen.add(current)
+        text = ET.tostring(by_id[current], encoding="unicode")
+        wanted.extend(re.findall(r"url\(#([^)]+)\)", text))
+        keep.append(text.replace(' xmlns:ns0="http://www.w3.org/2000/svg"', "").replace("ns0:", "").replace(' xmlns="http://www.w3.org/2000/svg"', ""))
     return "".join(keep)
 
 
