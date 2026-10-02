@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -28,6 +29,7 @@ from google.genai import types
 from .gemini_svg_experiment import _ensure_not_truncated, _extract_svg, _image_part, minimal_thinking
 
 ARTWORK_VERSION = "1"
+FAILURE_COOLDOWN_SECONDS = 10 * 60
 SVG_NS = "http://www.w3.org/2000/svg"
 # 그림 조각 크기(px). 가구 실측 비율을 유지하되 긴 변을 이 정도로 맞춰 그리게 한다.
 SYMBOL_LONG_SIDE_PX = 240.0
@@ -259,9 +261,9 @@ def generate_artwork(
         except (OSError, json.JSONDecodeError):
             pass
     failed_path = cache_dir / f"{key}.failed"
-    if failed_path.exists():
-        # 같은 입력으로 방금 실패했다면 다시 부르지 않는다(유료 호출 낭비 방지).
-        # 다시 시도하려면 이 파일을 지운다.
+    if failed_path.exists() and time.time() - failed_path.stat().st_mtime < FAILURE_COOLDOWN_SECONDS:
+        # 같은 입력으로 방금 실패했다면 잠시 다시 부르지 않는다(유료 호출 낭비 방지).
+        # 기한 없이 막으면 서버 혼잡 한 번에 그 방은 영영 기본 모양으로만 그려진다
         return {}
 
     try:

@@ -1816,6 +1816,10 @@ def floorplan():
             and saved_edit_upload
             == str(session.get("uploaded_file") or "")
             and os.path.isfile(saved_edit_layout)
+            and saved_edit_matches(
+                saved_edit_layout,
+                layout_file,
+            )
         ):
             layout_file = saved_edit_layout
 
@@ -4577,6 +4581,23 @@ def product_geometry(product, replacement_object=None):
         geometry["w_m"] = dims["w_m"]
         geometry["d_m"] = dims["d_m"]
     return geometry
+
+
+def saved_edit_matches(saved_path, fresh_path):
+    """저장된 편집본을 이어서 써도 되는가.
+
+    새 평면도가 Scene Graph인데 편집본이 예전 형식이면 쓰지 않는다. 섞어 쓰면
+    2D와 3D가 다른 배치를 그리고 편집 API도 동작하지 않는다.
+    """
+    try:
+        saved = json.loads(Path(saved_path).read_text(encoding="utf-8"))
+        fresh = json.loads(Path(fresh_path).read_text(encoding="utf-8")) if fresh_path else {}
+    except (OSError, ValueError):
+        return False
+    if scene_graph.is_scene_graph(fresh) and not scene_graph.is_scene_graph(saved):
+        print("[floorplan] 예전 형식의 편집본은 쓰지 않고 새 평면도를 씁니다.")
+        return False
+    return True
 
 
 def detected_furniture_from_graph(graph):

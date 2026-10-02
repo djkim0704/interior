@@ -344,6 +344,28 @@ def convert_graph_object(obj: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _fill_art_style(graph: dict[str, Any]) -> None:
+    """2D 그림의 바닥·벽 스타일이 없는 배치(기능 추가 전에 저장된 편집본 등)를 채운다.
+
+    편집본·수정본은 만들 당시의 방 정보를 그대로 들고 다녀서, 나중에 생긴 바닥 무늬
+    정보가 없다. 그러면 2D는 새 바닥으로, 3D는 옛 단색으로 그려진다.
+    """
+    room = graph.get("room") or {}
+    name = str(graph.get("artwork_file") or "")
+    if room.get("art_style") or not name:
+        return
+    import json
+    from pathlib import Path
+
+    from .gemini_floorplan_artwork import room_style
+
+    path = Path(__file__).resolve().parents[1] / "frontend" / "static" / "generated" / Path(name).name
+    try:
+        room["art_style"] = room_style(json.loads(path.read_text(encoding="utf-8")))
+    except (OSError, ValueError):
+        return
+
+
 def build_scene_from_graph(
     layout: dict[str, Any],
     plan: dict[str, Any] | None = None,
@@ -356,6 +378,7 @@ def build_scene_from_graph(
     from . import scene_graph
 
     graph = scene_graph.ensure(layout)
+    _fill_art_style(graph)
     plan_in = plan or {}
     width = _positive(plan_in.get("width_m"))
     depth = _positive(plan_in.get("depth_m"))

@@ -138,6 +138,10 @@ def enrich_products_with_visual_profiles(
         direct_svg_error_path = direct_svg_error_dir / f"{cache_key}.txt"
         attributes_path = attributes_cache_dir / f"{cache_key}.json"
         attributes_failed = attributes_cache_dir / f"{cache_key}.failed"
+        # 실패 기록은 30분만 유효하다. 일시적 오류 한 번으로 그 상품이 영영 기본 형태가
+        # 되지 않게 한다
+        if attributes_failed.exists() and time.time() - attributes_failed.stat().st_mtime > 30 * 60:
+            attributes_failed.unlink(missing_ok=True)
 
         try:
             image_bytes: bytes | None = None
@@ -1195,6 +1199,25 @@ def _legacy_layout(
     }
 
 
+def _analysis_meta(model: str) -> dict[str, Any]:
+    """분석 결과를 재사용해도 되는지 가리는 설정 묶음."""
+    from .topdown_experiment.run import ANALYSIS_PROMPT
+
+    return {
+        "model": model,
+        "prompt": hashlib.sha256(ANALYSIS_PROMPT.encode("utf-8")).hexdigest()[:16],
+        "image_max": os.getenv("GEMINI_LAYOUT_IMAGE_MAX", "").strip() or "2400",
+        "thinking": os.getenv("GEMINI_LAYOUT_THINKING", "").strip().lower() or "low",
+    }
+
+
+def _read_json(path: Path) -> Any:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
 def _file_digest(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as file:
@@ -1251,6 +1274,9 @@ def _reuse_identical_upload_cache(
             continue
         shutil.copy2(candidate_scene, scene_path)
         shutil.copy2(candidate_svg, svg_path)
+        candidate_meta = output_dir / f"{candidate.stem}_model2_scene.meta.json"
+        if candidate_meta.exists():
+            shutil.copy2(candidate_meta, output_dir / f"{image_path.stem}_model2_scene.meta.json")
         candidate_base_svg = (
             output_dir
             / (
@@ -1512,7 +1538,15 @@ def generate_floorplan_for_web(
         )
 
     client = _client()
-    scene_reused = skip_existing and _is_cache_fresh(scene_path)
+    # 같은 사진이라도 분석 모델·프롬프트·해상도·thinking이 바뀌면 다시 분석한다.
+    # 예전에는 30분 안이면 설정을 바꿔도 이전 분석을 그대로 썼다
+    meta_path = output_dir / f"{stem}_model2_scene.meta.json"
+    analysis_meta = _analysis_meta(layout_model)
+    scene_reused = (
+        skip_existing
+        and _is_cache_fresh(scene_path)
+        and _read_json(meta_path) == analysis_meta
+    )
     if scene_reused:
         scene = json.loads(scene_path.read_text(encoding="utf-8"))
     else:
@@ -1527,6 +1561,7 @@ def generate_floorplan_for_web(
             json.dumps(scene, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
+        meta_path.write_text(json.dumps(analysis_meta), encoding="utf-8")
 
     if _floorplan_renderer() == "scene_graph":
         return _finish_with_scene_graph(

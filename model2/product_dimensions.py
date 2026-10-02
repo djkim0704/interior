@@ -18,6 +18,7 @@ import hashlib
 import html as html_lib
 import json
 import os
+import time
 import re
 from pathlib import Path
 from typing import Any
@@ -215,7 +216,10 @@ def fetch_page(url: str, cache_dir: Path) -> str | None:
     if path.exists():
         return path.read_text(encoding="utf-8", errors="replace")
     if failed.exists():
-        return None
+        # 쇼핑몰 일시 장애로 영영 못 받는 일이 없도록 실패 기록은 하루만 유효하다
+        if time.time() - failed.stat().st_mtime < 24 * 3600:
+            return None
+        failed.unlink(missing_ok=True)
     try:
         import requests
 
