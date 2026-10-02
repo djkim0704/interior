@@ -987,6 +987,9 @@ class Floorplan3D {
     const failedViews = new Set(this.data.views_failed || []);
 
     this.data.objects.forEach((obj) => {
+      // 문·창문은 3D에 세우지 않는다. 기본 상자 모양이 오히려 방을 어색하게 보이게 해서
+      // 위치 확인은 2D 평면도로 한다(배치 계산의 문 앞 비우기는 서버에서 그대로 한다)
+      if (obj.type === "door" || obj.type === "window") return;
       // 설계도가 있으면 그것으로, 없으면 손으로 짠 빌더로 세운다.
       // 설계도는 Gemini 호출이라 없을 수 있어서 항상 빌더가 뒤를 받친다.
       // 모양은 멀티모달 모델이 가구별로 만든 부품 목록이 우선이다. 아직 없거나 실패한
