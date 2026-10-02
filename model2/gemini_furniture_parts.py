@@ -332,7 +332,8 @@ def thinking_for(model: str, level: str | None = None) -> types.ThinkingConfig:
     Gemini 3 계열은 thinking_level만 받고, 2.5 이하는 thinking_budget(토큰 수)을 받는다.
     """
     level = (level or "medium").strip().lower()
-    if level == "off":
+    # minimal은 최소 추론이다. 거절하는 모델은 telemetry 래퍼가 한 단계 올려 다시 보낸다
+    if level in {"off", "minimal"}:
         from .gemini_svg_experiment import minimal_thinking
 
         return minimal_thinking(model)

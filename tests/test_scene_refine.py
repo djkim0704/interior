@@ -110,5 +110,30 @@ class RefineTests(unittest.TestCase):
         self.assertIn("원형 식탁", prompt)
 
 
+class ThinkingLevelTests(unittest.TestCase):
+    def test_minimal_is_recognized_and_default_is_medium(self) -> None:
+        import os
+        from unittest import mock
+
+        from google.genai import types
+
+        from model2.gemini_furniture_parts import thinking_for
+
+        self.assertEqual(thinking_for("gemini-3.8-flash", "minimal").thinking_level, types.ThinkingLevel.MINIMAL)
+        self.assertEqual(thinking_for("gemini-2.5-flash", "minimal").thinking_budget, 0)
+        seen = {}
+
+        class Capture:
+            class models:
+                @staticmethod
+                def generate_content(*, model, contents, config=None):
+                    seen["level"] = config.thinking_config.thinking_level
+                    raise RuntimeError("stop")
+
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"GEMINI_SCENE_REFINE_THINKING": ""}):
+            refine.refine(Capture(), _graph(), model="gemini-3.8-flash", cache_dir=Path(tmp))
+        self.assertEqual(seen["level"], types.ThinkingLevel.MEDIUM)
+
+
 if __name__ == "__main__":
     unittest.main()

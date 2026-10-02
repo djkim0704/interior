@@ -207,8 +207,8 @@ def refine(
                     response_mime_type="application/json",
                     temperature=0.2,
                     max_output_tokens=16000,
-                    # 가구 사이 관계(의자와 식탁, 벽과 등)를 따져야 해서 추론을 켠다
-                    thinking_config=thinking_for(model, os.getenv("GEMINI_SCENE_REFINE_THINKING", "medium")),
+                    # 가구 사이 관계(의자와 식탁, 벽과 등)를 따져야 해서 추론을 켠다(기본 medium)
+                    thinking_config=thinking_for(model, os.getenv("GEMINI_SCENE_REFINE_THINKING", "").strip() or "medium"),
                 ),
             )
             if not response.text:
