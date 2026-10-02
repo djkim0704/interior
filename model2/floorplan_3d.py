@@ -308,7 +308,10 @@ def _attrs_for(obj_type: str, obj: dict[str, Any]) -> dict[str, Any]:
 
 def convert_graph_object(obj: dict[str, Any]) -> dict[str, Any]:
     """Scene Graph 객체 → 3D 씬 객체. 위치·크기·회전·id를 그대로 옮긴다."""
-    obj_type = str(obj.get("type") or "unknown").lower()
+    from .scene_graph import refine_type
+
+    # 예전에 저장된 배치는 좌식 테이블이 'table'로 남아 있을 수 있다
+    obj_type = refine_type(str(obj.get("type") or "unknown").lower(), obj.get("label"))
     preset = TYPE_PRESETS.get(obj_type, FALLBACK_PRESET)
     color = str(obj.get("color") or "")
     marker = obj.get("product_marker")

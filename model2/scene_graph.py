@@ -69,6 +69,7 @@ CATEGORY_TO_TYPE = {
     "bookshelf": "shelf",
     "bookcase": "shelf",
     "cabinet": "cabinet",
+    "storage": "cabinet",
     "sideboard": "cabinet",
     "tv_stand": "cabinet",
     "tv_cabinet": "cabinet",
@@ -218,6 +219,27 @@ def object_type(category: Any) -> str:
         if part in CATEGORY_TO_TYPE:
             return CATEGORY_TO_TYPE[part]
     return "decor" if key in {"speaker", "decor", "decoration", "vase", "clock", "frame", "basket"} else "unknown"
+
+
+# 분석이 종류를 'table'·'storage'처럼 넓게 줘도 이름에는 높이 단서가 있다. 좌식 테이블을
+# 식탁 높이(74cm)로 세우면 다리 없는 상판이 허리 높이에 떠 보이고, 'storage'는
+# 종류표에 없어 모든 수납장이 같은 기본 높이가 된다
+_NAME_HINTS = (
+    (("좌식", "낮은", "로우", "커피", "티테이블", "티 테이블", "찻상", "소파 테이블", "coffee", "low"), "low_table", {"table"}),
+    (("협탁", "사이드 테이블", "사이드테이블", "side table", "nightstand", "bedside"), "nightstand", {"table", "cabinet", "unknown"}),
+    (("선반", "책장", "shelf", "bookcase"), "shelf", {"table", "cabinet", "unknown"}),
+    (("서랍", "drawer", "dresser"), "dresser", {"table", "cabinet", "unknown"}),
+    (("수납장", "캐비닛", "cabinet", "sideboard"), "cabinet", {"unknown"}),
+)
+
+
+def refine_type(kind: str, label: Any) -> str:
+    """이름으로 넓은 종류(테이블·수납)를 좁힌다. 이미 구체적인 종류는 그대로 둔다."""
+    text = str(label or "").lower()
+    for words, target, applies_to in _NAME_HINTS:
+        if kind in applies_to and any(word in text for word in words):
+            return target
+    return kind
 
 
 def _is_quarter_turn(rotation: float) -> bool:
@@ -382,7 +404,7 @@ def from_analysis(
         if not isinstance(raw, dict):
             continue
         category = str(raw.get("category") or "unknown").lower()
-        kind = object_type(category)
+        kind = refine_type(object_type(category), raw.get("label_ko") or raw.get("label"))
         anchors = [a for a in raw.get("wall_anchors") or [] if a in WALLS]
         gemini_rotation = _number(raw.get("rotation_deg"), 0.0) % 360
         nx = _number(raw.get("x"), 0.5, 0.0, 1.0)

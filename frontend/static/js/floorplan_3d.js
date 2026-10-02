@@ -859,6 +859,61 @@ function extrude(shapes, z0, z1, color, { soft = 0, taper = 0, opacity = 1 } = {
   return group;
 }
 
+// 가구 높이 대비 비율. 수납장 위 소품처럼 몸체보다 조금 솟는 값은 살린다
+function zFrac(value) {
+  return Math.min(Math.max(value, 0), 1.6);
+}
+
+// 선으로 그린 다리·기둥(높이 구간이 있는 선)을 막대로 세운다. 위에서 본 선은 기울어진
+// 다리의 그림자 같은 것이라, 가구 중심에 가까운 끝을 위(z1), 먼 끝을 바닥 쪽(z0)으로 본다
+function strokeRod(path, node, style, toLocal, scale, H) {
+  const z0 = svgNumber(node, "data-z0");
+  const z1 = svgNumber(node, "data-z1");
+  if (z0 === null || z1 === null || z1 - z0 < 0.02) return null;  // 무늬 선은 세우지 않는다
+  if (!style.stroke || style.stroke === "none" || style.stroke === "transparent") return null;
+  const sub = (path.subPaths || []).find((sp) => sp.getPoints().length >= 2);
+  if (!sub) return null;
+  let points = sub.getPoints().map(toLocal);
+  if (points[points.length - 1].length() < points[0].length()) points = points.reverse();
+  return {
+    points,
+    z0: zFrac(z0) * H,
+    z1: zFrac(z1) * H,
+    radius: Math.min(Math.max((style.strokeWidth || 2) * scale, 0.02), 0.06) / 2,
+    color: "#" + new THREE.Color().setStyle(style.stroke).getHexString(),
+  };
+}
+
+function buildRod(rod) {
+  const group = new THREE.Group();
+  const mat = material(rod.color, 1, { roughness: 0.5 });
+  const lengths = [0];
+  for (let i = 1; i < rod.points.length; i += 1) {
+    lengths.push(lengths[i - 1] + rod.points[i].distanceTo(rod.points[i - 1]));
+  }
+  const total = lengths[lengths.length - 1];
+  const at = (i) => {
+    const t = total > 1e-4 ? lengths[i] / total : 0;
+    return new THREE.Vector3(rod.points[i].x, rod.z1 + (rod.z0 - rod.z1) * t, rod.points[i].y);
+  };
+  const segments = total > 1e-4
+    ? rod.points.slice(1).map((_, i) => [at(i), at(i + 1)])
+    // 위에서 보면 점인 선은 곧게 선 기둥이다
+    : [[new THREE.Vector3(rod.points[0].x, rod.z1, rod.points[0].y), new THREE.Vector3(rod.points[0].x, rod.z0, rod.points[0].y)]];
+  segments.forEach(([a, b]) => {
+    const dir = new THREE.Vector3().subVectors(b, a);
+    const length = dir.length();
+    if (length < 1e-4) return;
+    const mesh = new THREE.Mesh(new THREE.CylinderGeometry(rod.radius, rod.radius, length, 10), mat);
+    mesh.position.copy(a).add(b).multiplyScalar(0.5);
+    mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.normalize());
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    group.add(mesh);
+  });
+  return group;
+}
+
 function buildSolid(obj) {
   const art = obj.art3d;
   const [bx0, by0, bx1, by1] = art.box;
@@ -871,14 +926,19 @@ function buildSolid(obj) {
   );
   const H = obj.height_m;
   const parts = [];
+  const rods = [];
   SVG_LOADER.parse(art.svg).paths.forEach((path) => {
     const node = path.userData && path.userData.node;
     const style = (path.userData && path.userData.style) || {};
     if (!node) return;
     const tag = node.nodeName.toLowerCase();
-    if (tag === "line" || tag === "polyline") return;  // 선은 면이 없다
     if (svgAttr(node, "data-3d") === "skip") return;
-    if (!style.fill || style.fill === "none" || style.fill === "transparent") return;
+    // 면이 없는 선은 높이 구간이 있을 때만 막대(다리·기둥)로 세운다
+    if (tag === "line" || tag === "polyline" || !style.fill || style.fill === "none" || style.fill === "transparent") {
+      const rod = strokeRod(path, node, style, toLocal, (sx + sy) / 2, H);
+      if (rod) rods.push(rod);
+      return;
+    }
     const opacity = (style.opacity ?? 1) * (style.fillOpacity ?? 1);
     // 아주 옅은 칠은 그림자·빛 같은 효과라 세우지 않는다
     if (opacity < 0.3) return;
@@ -896,16 +956,17 @@ function buildSolid(obj) {
       taper: clamp01(svgNumber(node, "data-taper") ?? 0),
     });
   });
-  if (!parts.length) return null;
+  if (!parts.length && !rods.length) return null;
 
   const group = new THREE.Group();
-  const hinted = parts.some((p) => p.z1 !== null);
+  rods.forEach((rod) => group.add(buildRod(rod)));
+  const hinted = rods.length > 0 || parts.some((p) => p.z1 !== null);
   if (hinted) {
     // 같은 높이 면이 겹치면 깜박이므로, 나중 도형(2D에서 위에 그린 것)을 아주 조금 올린다
     parts.forEach((p, i) => {
       // 값을 빠뜨린 도형은 몸체 기둥이 되지 않게 맨 위 무늬로 붙인다
-      const z1 = clamp01(p.z1 ?? 1) * H;
-      const z0 = p.z1 === null ? z1 : Math.min(clamp01(p.z0 ?? 0) * H, z1);
+      const z1 = zFrac(p.z1 ?? 1) * H;
+      const z0 = p.z1 === null ? z1 : Math.min(zFrac(p.z0 ?? 0) * H, z1);
       const lift = i * 0.0006;
       const decal = z1 - z0 < DECAL_M;
       group.add(extrude(p.shapes, decal ? z1 + lift : z0, (decal ? z1 + DECAL_M : z1) + lift, p.color, p));

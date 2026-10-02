@@ -77,6 +77,10 @@ groups elements sharing the same values):
   the pedestal of a stool or lamp. Draw them at their real top-down position;
   they are removed from the 2D plan.
 - data-3d="skip": pure lighting effects (soft shadows, glows, highlights).
+- Every physical part must be a FILLED shape (rect, circle, ellipse, polygon
+  or closed path with a fill). Draw legs, poles and posts as small filled
+  rects or circles at their footprint position, never as <line> or
+  stroke-only paths: lines have no area and cannot be built in 3D.
 
 Return ONLY one SVG document, no Markdown, structured exactly like this:
 <svg xmlns="http://www.w3.org/2000/svg">
@@ -138,8 +142,10 @@ def cache_key(image_path: Path, graph: dict[str, Any], model: str) -> str:
 def _height_m(obj: dict[str, Any]) -> float:
     """3D에서 쓰는 높이와 같은 값(floorplan_3d.TYPE_PRESETS)을 알려 준다."""
     from .floorplan_3d import FALLBACK_PRESET, TYPE_PRESETS
+    from .scene_graph import refine_type
 
-    preset = TYPE_PRESETS.get(str(obj.get("type") or "").lower(), FALLBACK_PRESET)
+    kind = refine_type(str(obj.get("type") or "").lower(), obj.get("label"))
+    preset = TYPE_PRESETS.get(kind, FALLBACK_PRESET)
     return float(obj.get("h_m") or preset["height_m"])
 
 
