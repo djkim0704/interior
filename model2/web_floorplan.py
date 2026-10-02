@@ -108,11 +108,11 @@ def enrich_products_with_visual_profiles(
     local_cache_dir = cache_root / "product_visuals_local_v3"
     # Bump the cache whenever the photo-to-icon contract changes.  Reusing
     # v2 here would keep serving the old generic/incorrectly colored icons.
-    direct_svg_cache_dir = cache_root / "product_icon_svg_v4"
+    direct_svg_cache_dir = cache_root / "product_icon_svg_v5"
     gemini_cache_dir.mkdir(parents=True, exist_ok=True)
     local_cache_dir.mkdir(parents=True, exist_ok=True)
     direct_svg_cache_dir.mkdir(parents=True, exist_ok=True)
-    direct_svg_error_dir = cache_root / "product_icon_errors_v4"
+    direct_svg_error_dir = cache_root / "product_icon_errors_v5"
     direct_svg_error_dir.mkdir(parents=True, exist_ok=True)
     # 3D 형태 속성(항목 5). 아이콘용 visual_profile과 형식이 달라 따로 캐시한다
     attributes_cache_dir = cache_root / "product_attributes_gemini_v1"

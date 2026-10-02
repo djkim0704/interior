@@ -353,10 +353,14 @@ function buildSolid(obj) {
     return group;
   }
 
-  // 높이 정보가 없을 때(2D 기본 모양 등): 가장 큰 도형을 몸체로 가구 높이까지 세우고,
-  // 그 뒤에 그린 도형은 윗면 무늬로 붙인다. 몸체보다 앞에 그린 도형은 대개 바닥 그림자라 뺀다
+  // 높이 정보가 없을 때(2D 기본 모양, 예전 상품 아이콘 등): 가장 큰 도형을 몸체로 가구
+  // 높이까지 세우고, 그 뒤에 그린 도형은 윗면 무늬로 붙인다. 몸체보다 먼저 그린 도형(다리·
+  // 몸판 등)도 바닥부터 세운다. 그림자·빛은 위에서 이미 걸렀다(data-3d="skip", 옅은 칠)
   const baseIndex = parts.reduce((best, p, i) => (p.area > parts[best].area ? i : best), 0);
   const base = parts[baseIndex];
+  parts.slice(0, baseIndex).forEach((p, i) => {
+    group.add(extrude(p.shapes, 0, H - (baseIndex - i) * 0.0006, p.color, { opacity: p.opacity }));
+  });
   group.add(extrude(base.shapes, 0, H, base.color));
   parts.slice(baseIndex + 1).forEach((p, i) => {
     const lift = (i + 1) * 0.0006;

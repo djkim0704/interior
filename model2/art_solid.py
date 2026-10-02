@@ -99,8 +99,31 @@ def flatten_paints(markup: str, defs: str) -> str:
     )
 
 
+def _icon_parts(svg_text: object) -> tuple[str, str] | None:
+    """상품 아이콘 SVG 문서 → (그림 조각, defs 조각)."""
+    if not isinstance(svg_text, str) or "<svg" not in svg_text:
+        return None
+    try:
+        root = ET.fromstring(svg_text)
+    except ET.ParseError:
+        return None
+    defs, body = [], []
+    for child in list(root):
+        target = defs if _local(child.tag) == "defs" else body
+        if target is defs:
+            defs.extend(ET.tostring(item, encoding="unicode") for item in child)
+        else:
+            body.append(ET.tostring(child, encoding="unicode"))
+
+    def clean(markup: str) -> str:
+        return markup.replace(f' xmlns:ns0="{SVG_NS}"', "").replace("ns0:", "").replace(f' xmlns="{SVG_NS}"', "")
+
+    markup = clean("".join(body))
+    return (markup, clean("".join(defs))) if markup.strip() else None
+
+
 def object_solid(obj: dict[str, Any], artwork: dict[str, Any] | None) -> dict[str, Any] | None:
-    """{"svg": 단독 SVG 문서, "box": [x0, y0, x1, y1], "source": "gemini"|"code"}.
+    """{"svg": 단독 SVG 문서, "box": [x0, y0, x1, y1], "source": "gemini"|"product_icon"|"code"}.
 
     box는 2D 렌더러가 그림을 바닥면에 맞출 때 쓰는 범위와 같다(3D 전용 부품 제외).
     그래야 3D의 외곽이 2D와 같다.
@@ -109,9 +132,14 @@ def object_solid(obj: dict[str, Any], artwork: dict[str, Any] | None) -> dict[st
     if kind in SKIP_TYPES:
         return None
     drawn = ((artwork or {}).get("objects") or {}).get(str(obj.get("id")))
+    icon = _icon_parts(obj.get("icon_svg"))
     if drawn and drawn.get("markup"):
         markup = flatten_paints(str(drawn["markup"]), str((artwork or {}).get("defs") or ""))
         source = "gemini"
+    elif icon:
+        # 추가한 상품: 2D에 그린 상품 아이콘(Gemini가 상품 사진으로 그린 위에서 본 그림)
+        markup = flatten_paints(*icon)
+        source = "product_icon"
     else:
         # Gemini 그림이 없는 가구(추가한 상품 등)는 2D에 실제로 그려지는 기본 모양을 쓴다
         w = float(obj.get("w_m") or 0.5) * CODE_PX_PER_M

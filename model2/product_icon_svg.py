@@ -9,6 +9,7 @@ from typing import Any
 
 from google.genai import types
 
+from .gemini_floorplan_artwork import SOLID_HINTS
 from .gemini_svg_experiment import _extract_svg
 
 
@@ -91,6 +92,12 @@ Technical requirements:
 - Use SVG presentation attributes directly on elements. Do not use a style
   element or style attributes.
 - Use at most 120 SVG elements. Keep paths compact.
+
+Orientation: the BACK of the furniture (headboard, sofa back, the side that
+goes against a wall) is at the TOP edge of the canvas (y=0); the front, where
+a person approaches it, is at the bottom.
+
+{solid_hints}
 """.strip()
 
 
@@ -114,14 +121,12 @@ def generate_product_icon_svg(
     """Ask Gemini for a direct SVG icon and return a sanitized SVG document."""
     normalized_category = (category or "").strip().lower()
     resolved_model = resolve_icon_model(normalized_category, model)
-    viewpoint_instruction = (
-        TOPDOWN_VIEWPOINT_INSTRUCTION
-        if normalized_category in TOPDOWN_ONLY_CATEGORIES
-        else FLEXIBLE_VIEWPOINT_INSTRUCTION
-    )
+    # 아이콘을 3D로 밀어 올려 세우므로 비스듬한 그림이면 안 된다. 모든 종류를 위에서 본 그림으로
+    viewpoint_instruction = TOPDOWN_VIEWPOINT_INSTRUCTION
     prompt = ICON_PROMPT_TEMPLATE.format(
         size=size,
         viewpoint_instruction=viewpoint_instruction,
+        solid_hints=SOLID_HINTS,
     )
     prompt += (
         "\n\nPRODUCT INFO:"

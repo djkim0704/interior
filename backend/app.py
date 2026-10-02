@@ -3553,6 +3553,12 @@ def create_modified_floorplan(
                     "product_marker": (
                         marker
                     ),
+                    # 2D에 그린 상품 아이콘. 3D도 같은 SVG를 밀어 올려 세운다
+                    "icon_svg": (
+                        product.get("icon_svg")
+                        if isinstance(product.get("icon_svg"), str)
+                        else None
+                    ),
                     # 상품 실측 치수·형태 속성(항목 6·7·14). Scene Graph와 3D가 이 값으로
                     # 상품 크기와 모양을 정한다
                     **product_geometry(

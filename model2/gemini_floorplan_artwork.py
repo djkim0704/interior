@@ -36,27 +36,8 @@ SVG_NS = "http://www.w3.org/2000/svg"
 SYMBOL_LONG_SIDE_PX = 240.0
 SKIP_TYPES = {"door", "window"}  # 벽 구조물은 코드가 그린다
 
-ARTWORK_PROMPT = """
-You are an expert interior illustrator and SVG artist. Draw top-down artwork
-for each piece of furniture listed below, matching the supplied interior photo.
-
-The target style is a warm hand-drawn architectural interior illustration:
-- Directly overhead orthographic view of each object, not an oblique perspective.
-- Objects feel volumetric through their own construction: curved cushions,
-  folded blankets with soft wave lines, pillows, visible frames, headboards,
-  drawer fronts, chair backs, cabinet tops, lamps, books and small decor.
-- Restrained soft local shadows, gentle gradients and highlights. Thin, light
-  outlines. A harmonious warm palette (cream, beige, light wood) that still
-  preserves each object's real color, material and distinctive pattern from
-  the photograph.
-- Do NOT fake volume with a large offset copy of the silhouette.
-
-Each object has its own local drawing box, given as W x H pixels:
-- Draw the object inside x from 0 to W and y from 0 to H, filling the box.
-- y=0 is the BACK of the object (headboard, sofa back, the side against the
-  wall). y=H is the front, where a person approaches it.
-- Do not draw labels or text. Do not draw the room floor inside object boxes.
-
+# 3D 돌출에 쓰는 도형별 높이 규칙. 방 가구 그림과 상품 아이콘이 같이 쓴다(product_icon_svg)
+SOLID_HINTS = """
 The same artwork is also extruded into a 3D model, so describe the height of
 every part. Put these attributes on each drawn element (or on a <g> that
 groups elements sharing the same values):
@@ -81,6 +62,30 @@ groups elements sharing the same values):
   or closed path with a fill). Draw legs, poles and posts as small filled
   rects or circles at their footprint position, never as <line> or
   stroke-only paths: lines have no area and cannot be built in 3D.
+""".strip()
+
+ARTWORK_PROMPT = """
+You are an expert interior illustrator and SVG artist. Draw top-down artwork
+for each piece of furniture listed below, matching the supplied interior photo.
+
+The target style is a warm hand-drawn architectural interior illustration:
+- Directly overhead orthographic view of each object, not an oblique perspective.
+- Objects feel volumetric through their own construction: curved cushions,
+  folded blankets with soft wave lines, pillows, visible frames, headboards,
+  drawer fronts, chair backs, cabinet tops, lamps, books and small decor.
+- Restrained soft local shadows, gentle gradients and highlights. Thin, light
+  outlines. A harmonious warm palette (cream, beige, light wood) that still
+  preserves each object's real color, material and distinctive pattern from
+  the photograph.
+- Do NOT fake volume with a large offset copy of the silhouette.
+
+Each object has its own local drawing box, given as W x H pixels:
+- Draw the object inside x from 0 to W and y from 0 to H, filling the box.
+- y=0 is the BACK of the object (headboard, sofa back, the side against the
+  wall). y=H is the front, where a person approaches it.
+- Do not draw labels or text. Do not draw the room floor inside object boxes.
+
+{solid_hints}
 
 Return ONLY one SVG document, no Markdown, structured exactly like this:
 <svg xmlns="http://www.w3.org/2000/svg">
@@ -100,7 +105,7 @@ Technical requirements:
   document under 12,000 output tokens.
 
 OBJECTS (id, kind, Korean name, W x H, total height, color / material / pattern hints):
-""".strip()
+""".strip().replace("{solid_hints}", SOLID_HINTS)
 
 
 def symbol_box(obj: dict[str, Any]) -> tuple[int, int]:

@@ -49,6 +49,20 @@ class ObjectSolidTests(unittest.TestCase):
         art = {"defs": ARTWORK["defs"], "objects": {"sofa_1": {"markup": '<rect width="10" height="10" fill="url(#gx-cush, url(#x))"/>'}}}
         self.assertNotIn("url(", art_solid.object_solid(SOFA, art)["svg"])
 
+    def test_added_product_uses_its_2d_icon(self) -> None:
+        # 2D에 그린 상품 아이콘을 3D도 그대로 세운다(코드 기본 모양 대신)
+        icon = (
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200"><defs>'
+            '<linearGradient id="pi-x-seat"><stop stop-color="#334455"/></linearGradient></defs>'
+            '<g id="pi-x-icon"><rect x="20" y="30" width="160" height="140" fill="url(#pi-x-seat)" '
+            'data-z0="0.4" data-z1="0.5"/></g></svg>'
+        )
+        solid = art_solid.object_solid({**SOFA, "id": "product_1", "type": "chair", "icon_svg": icon}, ARTWORK)
+        self.assertEqual(solid["source"], "product_icon")
+        self.assertEqual(solid["box"], [20.0, 30.0, 180.0, 170.0])
+        self.assertIn('fill="#334455"', solid["svg"])
+        self.assertIn('data-z1="0.5"', solid["svg"])
+
     def test_code_shape_when_no_artwork(self) -> None:
         solid = art_solid.object_solid({**SOFA, "id": "product_1", "type": "desk"}, ARTWORK)
         self.assertEqual(solid["source"], "code")
