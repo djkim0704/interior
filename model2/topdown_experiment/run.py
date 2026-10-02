@@ -100,6 +100,22 @@ photo_box is where the object appears in the PHOTO itself (not the top-down
 plan): [left, top, right, bottom] as fractions 0..1 of the image width/height.
 confidence is how sure you are that the object exists with this category and
 approximate size; use lower values for partly hidden or ambiguous objects.
+
+Doors and windows:
+- List EVERY door and window that is visible, even partly (a door frame, a
+  handle, a strip of a window or curtain edge counts). Use category "door" or
+  "window", put them on the wall they belong to with wall_anchors, and set width
+  to their size along that wall. Use a lower confidence when only partly visible.
+- A room has at least one entrance. If the entrance is not visible, do NOT invent
+  it; the user will add it.
+
+Scale and size:
+- Estimate room proportions and object sizes from real-world references in the
+  photo: floor planks or tiles, doors (about 0.9 m wide, 2.0 m tall), beds
+  (about 2.0 m long), desks (about 0.6 m deep), chairs, outlets and windows.
+- width and depth are the object's footprint as seen from above; do not include
+  its shadow or the empty space around it. Objects farther from the camera look
+  smaller in the photo; correct for perspective.
 Keep every numeric value within its stated range.
 """.strip()
 
@@ -179,6 +195,22 @@ def _client() -> genai.Client:
             async_client_args={"trust_env": False},
         ),
     ))
+
+
+def _env_int_value(name: str, default: int, low: int, high: int) -> int:
+    try:
+        return max(low, min(high, int(os.getenv(name, "").strip() or default)))
+    except ValueError:
+        return default
+
+
+def _layout_thinking(model: str) -> Any:
+    level = os.getenv("GEMINI_LAYOUT_THINKING", "low").strip().lower() or "low"
+    try:
+        from ..gemini_furniture_parts import thinking_for
+    except ImportError:
+        from model2.gemini_furniture_parts import thinking_for
+    return thinking_for(model, level)
 
 
 def _ensure_not_truncated(response: Any) -> None:
@@ -295,7 +327,12 @@ def analyze_room(
 ) -> dict[str, Any]:
     response = client.models.generate_content(
         model=model,
-        contents=[ANALYSIS_PROMPT, _image_part(input_path)],
+        # 사진을 크게 보낼수록 작은 가구·문틀·바닥 줄눈 같은 축척 단서가 살아난다.
+        # 입력 토큰만 늘고 요청 수는 같다
+        contents=[
+            ANALYSIS_PROMPT,
+            _image_part(input_path, max_side=_env_int_value("GEMINI_LAYOUT_IMAGE_MAX", 2400, 768, 4096)),
+        ],
         config=types.GenerateContentConfig(
             response_mime_type="application/json",
             temperature=0.1,
@@ -304,6 +341,9 @@ def analyze_room(
             # pro 계열은 thinking을 끌 수 없어 추론만으로 수천 토큰을 쓴다. 한도는
             # 상한일 뿐 쓴 만큼만 과금되므로 넉넉히 둔다.
             max_output_tokens=int(os.getenv("GEMINI_LAYOUT_MAX_OUTPUT_TOKENS", "32768")),
+            # 가구 위치·크기를 원근을 따져 추론하게 한다. 기본 low: 생각 토큰은 늘지만
+            # 요청 수는 같다. off|low|medium|high (GEMINI_LAYOUT_THINKING)
+            thinking_config=_layout_thinking(model),
         ),
     )
     if not response.text:
