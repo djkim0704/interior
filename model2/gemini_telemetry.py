@@ -149,6 +149,31 @@ def _write_log(record: dict[str, Any]) -> None:
         pass
 
 
+_LEVEL_ORDER = ["MINIMAL", "LOW", "MEDIUM", "HIGH"]
+# 모델별로 거절당한 thinking_level. 서버를 다시 켤 때까지 기억한다
+_rejected_levels: dict[str, set[str]] = {}
+
+
+def _thinking_level_name(config: Any) -> str | None:
+    level = getattr(getattr(config, "thinking_config", None), "thinking_level", None)
+    if level is None:
+        return None
+    return str(getattr(level, "name", level)).split(".")[-1].upper()
+
+
+def _supported_thinking(model: str, config: Any) -> Any:
+    """거절당한 단계면 받는 단계가 나올 때까지 한 단계씩 올린 config."""
+    level = _thinking_level_name(config)
+    rejected = _rejected_levels.get(model) or set()
+    if not level or level not in rejected or level not in _LEVEL_ORDER:
+        return config
+    for name in _LEVEL_ORDER[_LEVEL_ORDER.index(level) + 1:]:
+        if name not in rejected:
+            thinking = config.thinking_config.model_copy(update={"thinking_level": types.ThinkingLevel[name]})
+            return config.model_copy(update={"thinking_config": thinking})
+    return config
+
+
 class _InstrumentedModels:
     def __init__(self, client: Any) -> None:
         # 원본 Client를 붙들어 둔다. 놓치면 GC가 커넥션을 닫는다(AGENTS.md 7.4)
@@ -157,6 +182,30 @@ class _InstrumentedModels:
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._models, name)
+
+    def _call_with_supported_thinking(self, model: str, contents: Any, config: Any, **kwargs: Any) -> Any:
+        """추론 단계를 지원하지 않는다는 400이면 한 단계 올려 다시 보낸다.
+
+        같은 Gemini 3 계열이라도 모델마다 받는 thinking_level이 다르다(MINIMAL을 거절하는
+        모델이 있다). 호출부마다 모델별 표를 두지 않고, 거절당한 단계를 기억해 다음부터는
+        처음부터 받는 단계로 보낸다.
+        """
+        config = _supported_thinking(model, config)
+        for _ in range(len(_LEVEL_ORDER)):
+            try:
+                return self._models.generate_content(model=model, contents=contents, config=config, **kwargs)
+            except Exception as exc:
+                text = str(exc).lower()
+                level = _thinking_level_name(config)
+                if not level or "thinking level" not in text or "not supported" not in text:
+                    raise
+                _rejected_levels.setdefault(model, set()).add(level)
+                upgraded = _supported_thinking(model, config)
+                if _thinking_level_name(upgraded) == level:
+                    raise
+                print(f"[gemini] {model}은 추론 단계 {level}을 받지 않아 {_thinking_level_name(upgraded)}로 다시 보냅니다.")
+                config = upgraded
+        raise RuntimeError("지원하는 추론 단계를 찾지 못했습니다.")
 
     def generate_content(self, *, model: str, contents: Any, config: Any = None, **kwargs: Any) -> Any:
         mode = _mode()
@@ -193,12 +242,7 @@ class _InstrumentedModels:
             return response
 
         try:
-            response = self._models.generate_content(
-                model=model,
-                contents=contents,
-                config=config,
-                **kwargs,
-            )
+            response = self._call_with_supported_thinking(model, contents, config, **kwargs)
         except Exception as exc:
             record.update(
                 ok=False,
