@@ -199,6 +199,8 @@
             </select>
             <label class="small text-muted" for="reviewDoorOffset">벽의 어느 쪽</label>
             <input id="reviewDoorOffset" type="range" min="0" max="100" value="50" class="form-range" style="width:140px">
+            <label class="small text-muted" for="reviewDoorWidth">문 폭(cm)</label>
+            <input id="reviewDoorWidth" type="number" min="40" max="300" step="1" class="form-control form-control-sm" style="width:90px" placeholder="예: 90">
             <button id="reviewDoorAdd" type="button" class="btn btn-sm btn-outline-dark rounded-pill px-3">문 추가</button>
           </div>
         </div>
@@ -218,14 +220,14 @@
 
 {% block extra_js %}
 <script
-  src="{{ url_for('static', filename='js/floorplan_drag.js', v='20261003-rods') }}"
+  src="{{ url_for('static', filename='js/floorplan_drag.js', v='20261003-no-hardcode') }}"
 ></script>
 <script
-  src="{{ url_for('static', filename='js/floorplan_edit.js', v='20261003-rods') }}"
+  src="{{ url_for('static', filename='js/floorplan_edit.js', v='20261003-no-hardcode') }}"
   data-save-url="{{ url_for('save_floorplan_edit') }}"
 ></script>
 <script
-  src="{{ url_for('static', filename='js/floorplan_review.js', v='20261002-review') }}"
+  src="{{ url_for('static', filename='js/floorplan_review.js', v='20261003-door-width') }}"
 ></script>
 
 {% if scene_3d %}
@@ -245,7 +247,7 @@
   </script>
   <script
     type="module"
-    src="{{ url_for('static', filename='js/floorplan_3d.js', v='20261003-rods') }}"
+    src="{{ url_for('static', filename='js/floorplan_3d.js', v='20261003-no-hardcode') }}"
   ></script>
 {% endif %}
 {% endblock %}

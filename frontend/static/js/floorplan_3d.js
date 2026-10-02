@@ -29,415 +29,7 @@ function material(hex, factor = 1, extra = {}) {
   });
 }
 
-// 박스 하나. y 는 바닥에서 띄운 높이(밑면 기준)라서 중심으로 변환해 넣는다.
-function box(w, h, d, mat, x = 0, y = 0, z = 0) {
-  const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
-  mesh.position.set(x, y + h / 2, z);
-  mesh.castShadow = true;
-  mesh.receiveShadow = true;
-  return mesh;
-}
-
-function cylinder(radius, h, mat, x = 0, y = 0, z = 0, segments = 16) {
-  const mesh = new THREE.Mesh(
-    new THREE.CylinderGeometry(radius, radius, h, segments),
-    mat
-  );
-  mesh.position.set(x, y + h / 2, z);
-  mesh.castShadow = true;
-  mesh.receiveShadow = true;
-  return mesh;
-}
-
-// 다리 4개를 판 아래에 달아준다(책상·식탁·선반 공용).
-function addLegs(group, w, d, legTop, mat, inset = 0.06, thickness = 0.05) {
-  const dx = w / 2 - inset;
-  const dz = d / 2 - inset;
-  [[-dx, -dz], [dx, -dz], [-dx, dz], [dx, dz]].forEach(([lx, lz]) => {
-    group.add(box(thickness, legTop, thickness, mat, lx, 0, lz));
-  });
-}
-
-// ── 타입별 가구 만들기 ─────────────────────────────────────
-// 각 함수는 "뒷면이 -z 를 향한" 상태로 만든다. 벽 방향 회전은 호출부에서 준다.
-// obj: { w_m, d_m, height_m, color, ... }
-const BUILDERS = {
-  bed(obj) {
-    const g = new THREE.Group();
-    const { w_m: w, d_m: d, height_m: h, color } = obj;
-    const wood = material(color, 0.55);
-    const sheet = material("#f2ece0", 1);
-    const fabric = material(color, 1.05);
-
-    g.add(box(w, h * 0.6, d, wood, 0, 0, 0));                       // 프레임
-    g.add(box(w * 0.94, h * 0.4, d * 0.94, sheet, 0, h * 0.6, 0));  // 매트리스
-    // 이불은 발치(+z) 쪽 60%
-    g.add(box(w * 0.92, h * 0.12, d * 0.58, fabric, 0, h, d * 0.19));
-    // 베개 2개는 머리쪽(-z)
-    [-w * 0.23, w * 0.23].forEach((px) => {
-      g.add(box(w * 0.38, h * 0.16, d * 0.16, sheet, px, h, -d * 0.36));
-    });
-    // 헤드보드 — 뒷면(-z)에 세운다
-    g.add(box(w, h * 1.7, 0.06, wood, 0, 0, -d / 2 + 0.03));
-    return g;
-  },
-
-  desk(obj) {
-    const g = new THREE.Group();
-    const { w_m: w, d_m: d, height_m: h, color } = obj;
-    const top = material(color, 1);
-    const leg = material(color, 0.7);
-    g.add(box(w, 0.04, d, top, 0, h - 0.04, 0));
-    addLegs(g, w, d, h - 0.04, leg);
-    return g;
-  },
-
-  table(obj) {
-    return BUILDERS.desk(obj);
-  },
-
-  low_table(obj) {
-    const g = new THREE.Group();
-    const { w_m: w, d_m: d, height_m: h, color } = obj;
-    const top = material(color, 1);
-    const leg = material(color, 0.7);
-    g.add(box(w, 0.05, d, top, 0, h - 0.05, 0));
-    addLegs(g, w, d, h - 0.05, leg, 0.05, 0.045);
-    return g;
-  },
-
-  shelf(obj) {
-    const g = new THREE.Group();
-    const { w_m: w, d_m: d, height_m: h, color } = obj;
-    const frame = material(color, 0.85);
-    const inner = material(color, 1.1);
-    g.add(box(0.04, h, d, frame, -w / 2 + 0.02, 0, 0));   // 좌측판
-    g.add(box(0.04, h, d, frame, w / 2 - 0.02, 0, 0));    // 우측판
-    g.add(box(w, 0.03, d, frame, 0, h - 0.03, 0));        // 천판
-    const shelves = Math.max(2, Math.round(h / 0.4));
-    for (let i = 1; i < shelves; i += 1) {
-      g.add(box(w - 0.08, 0.025, d * 0.94, inner, 0, (h / shelves) * i, 0));
-    }
-    g.add(box(w, 0.02, d, frame, 0, 0, 0));               // 바닥판
-    return g;
-  },
-
-  cabinet(obj) {
-    const g = new THREE.Group();
-    const { w_m: w, d_m: d, height_m: h, color } = obj;
-    const body = material(color, 0.9);
-    const door = material(color, 1.12);
-    const knob = material("#4a4238", 1);
-    g.add(box(w, h, d, body, 0, 0, 0));
-    // 앞면(+z)에 문짝 두 장과 손잡이
-    const half = w / 2 - 0.02;
-    [-half / 1.02, half / 1.02].forEach((dx) => {
-      g.add(box(w / 2 - 0.03, h - 0.06, 0.02, door, dx, 0.03, d / 2 + 0.005));
-    });
-    [-0.04, 0.04].forEach((dx) => {
-      g.add(cylinder(0.015, 0.05, knob, dx, h * 0.55, d / 2 + 0.02, 8));
-    });
-    return g;
-  },
-
-  chair(obj) {
-    const g = new THREE.Group();
-    const { w_m: w, d_m: d, height_m: h, color } = obj;
-    const seatH = Math.min(0.45, h * 0.5);
-    const seat = material(color, 1);
-    const leg = material(color, 0.68);
-    g.add(box(w, 0.06, d, seat, 0, seatH, 0));
-    addLegs(g, w, d, seatH, leg, 0.04, 0.04);
-    // 등받이는 뒷면(-z)
-    g.add(box(w, h - seatH, 0.05, seat, 0, seatH, -d / 2 + 0.025));
-    return g;
-  },
-
-  floor_chair(obj) {
-    const g = new THREE.Group();
-    const { w_m: w, d_m: d, height_m: h, color } = obj;
-    const fabric = material(color, 1);
-    g.add(box(w, h * 0.35, d, fabric, 0, 0, 0));
-    g.add(box(w, h * 0.9, 0.07, material(color, 0.85), 0, 0, -d / 2 + 0.035));
-    return g;
-  },
-
-  stool(obj) {
-    const g = new THREE.Group();
-    const { w_m: w, d_m: d, height_m: h, color } = obj;
-    const radius = Math.max(0.12, Math.min(w, d) / 2);
-    g.add(cylinder(radius, 0.06, material(color, 1), 0, h - 0.06, 0));
-    addLegs(g, radius * 1.5, radius * 1.5, h - 0.06, material(color, 0.7), 0.02, 0.035);
-    return g;
-  },
-
-  rug(obj) {
-    const { w_m: w, d_m: d, color } = obj;
-    const mesh = box(w, 0.015, d, material(color, 1, { roughness: 0.95 }));
-    mesh.castShadow = false;
-    return mesh;
-  },
-
-  lamp(obj) {
-    const g = new THREE.Group();
-    const { height_m: h, color } = obj;
-    const pole = material("#5c5348", 1);
-    const shadeMat = new THREE.MeshStandardMaterial({
-      color: shade(color, 1),
-      roughness: 0.5,
-      emissive: shade(color, 0.35),
-    });
-    g.add(cylinder(0.12, 0.03, pole, 0, 0));            // 받침
-    g.add(cylinder(0.02, h - 0.25, pole, 0, 0.03));     // 기둥
-    g.add(cylinder(0.16, 0.22, shadeMat, 0, h - 0.22)); // 갓
-    return g;
-  },
-
-  plant(obj) {
-    const g = new THREE.Group();
-    const { w_m: w, d_m: d, height_m: h, color } = obj;
-    const potR = Math.max(0.09, Math.min(w, d) / 2.6);
-    g.add(cylinder(potR, h * 0.3, material("#a9663f", 1), 0, 0));
-    const leaf = material(color, 1);
-    g.add(cylinder(potR * 0.18, h * 0.35, material("#5c6b3f", 1), 0, h * 0.3, 0, 8));
-    // 잎 뭉치를 구 3개로 겹쳐 표현
-    [[0, h * 0.72, 0, potR * 1.5], [potR * 0.7, h * 0.62, 0, potR],
-     [-potR * 0.6, h * 0.66, potR * 0.4, potR * 0.9]].forEach(([lx, ly, lz, r]) => {
-      const s = new THREE.Mesh(new THREE.SphereGeometry(r, 12, 10), leaf);
-      s.position.set(lx, ly, lz);
-      s.castShadow = true;
-      g.add(s);
-    });
-    return g;
-  },
-
-  mirror(obj) {
-    const g = new THREE.Group();
-    const { w_m: w, height_m: h, color } = obj;
-    g.add(box(w, h, 0.04, material("#6b6259", 1), 0, 0, 0));
-    g.add(box(w - 0.08, h - 0.08, 0.02, new THREE.MeshStandardMaterial({
-      color: shade(color, 1), roughness: 0.12, metalness: 0.75,
-    }), 0, 0.04, 0.025));
-    return g;
-  },
-
-  door(obj) {
-    const g = new THREE.Group();
-    const { w_m: w, height_m: h, color } = obj;
-    g.add(box(w, h, 0.06, material(color, 0.92), 0, 0, 0));
-    g.add(cylinder(0.02, 0.09, material("#4a4238", 1), w / 2 - 0.12, h * 0.48, 0.05, 8));
-    return g;
-  },
-
-  window(obj) {
-    const g = new THREE.Group();
-    const { w_m: w, height_m: h } = obj;
-    const frame = material("#f6f3ec", 1);
-    const glass = new THREE.MeshStandardMaterial({
-      color: new THREE.Color("#cfe4ee"),
-      roughness: 0.08,
-      metalness: 0.1,
-      transparent: true,
-      opacity: 0.42,
-    });
-    g.add(box(w, h, 0.05, frame, 0, 0, 0));
-    g.add(box(w - 0.1, h - 0.1, 0.02, glass, 0, 0.05, 0.02));
-    g.add(box(0.04, h - 0.1, 0.04, frame, 0, 0.05, 0.03)); // 중간 창틀
-    return g;
-  },
-
-  sofa(obj) {
-    const g = new THREE.Group();
-    const { w_m: w, d_m: d, height_m: h, color } = obj;
-    const body = material(color, 1);
-    const cushion = material(color, 1.16);
-    const arm = Math.min(0.18, w * 0.14);
-    g.add(box(w, h * 0.45, d, body, 0, 0, 0));                        // 좌대
-    g.add(box(w, h * 0.95, d * 0.24, body, 0, 0, -d / 2 + d * 0.12)); // 등받이
-    [-w / 2 + arm / 2, w / 2 - arm / 2].forEach((ax) => {             // 팔걸이
-      g.add(box(arm, h * 0.68, d, body, ax, 0, 0));
-    });
-    g.add(box(w - arm * 2.2, h * 0.15, d * 0.68, cushion, 0, h * 0.45, d * 0.1));
-    return g;
-  },
-
-  wardrobe(obj) {
-    const g = new THREE.Group();
-    const { w_m: w, d_m: d, height_m: h, color } = obj;
-    const body = material(color, 0.88);
-    const door = material(color, 1.1);
-    g.add(box(w, h, d, body, 0, 0, 0));
-    const half = w / 2 - 0.02;
-    [-half / 1.02, half / 1.02].forEach((dx) => {
-      g.add(box(w / 2 - 0.03, h - 0.08, 0.02, door, dx, 0.04, d / 2 + 0.005));
-    });
-    // 손잡이는 가운데 맞닿는 쪽에 세로로
-    [-0.03, 0.03].forEach((dx) => {
-      g.add(box(0.02, 0.22, 0.03, material("#4a4238", 1), dx, h * 0.46, d / 2 + 0.02));
-    });
-    return g;
-  },
-
-  dresser(obj) {
-    const g = new THREE.Group();
-    const { w_m: w, d_m: d, height_m: h, color } = obj;
-    const body = material(color, 0.9);
-    const front = material(color, 1.12);
-    const knob = material("#4a4238", 1);
-    g.add(box(w, h, d, body, 0, 0, 0));
-    const rows = Math.max(2, Math.round(h / 0.26));
-    for (let i = 0; i < rows; i += 1) {
-      const y = (h / rows) * i + 0.02;
-      g.add(box(w - 0.06, h / rows - 0.04, 0.02, front, 0, y, d / 2 + 0.005));
-      g.add(cylinder(0.014, 0.04, knob, 0, y + h / rows / 2 - 0.03, d / 2 + 0.02, 8));
-    }
-    return g;
-  },
-
-  bench(obj) {
-    const g = new THREE.Group();
-    const { w_m: w, d_m: d, height_m: h, color } = obj;
-    const seat = material(color, 1);
-    const leg = material(color, 0.7);
-    g.add(box(w, 0.06, d, seat, 0, h - 0.06, 0));
-    addLegs(g, w, d, h - 0.06, leg, 0.05, 0.05);
-    return g;
-  },
-
-  tv(obj) {
-    const g = new THREE.Group();
-    const { w_m: w, height_m: h, color } = obj;
-    const frame = material(color, 1);
-    const screen = new THREE.MeshStandardMaterial({
-      color: new THREE.Color("#1b2b34"),
-      roughness: 0.18,
-      metalness: 0.35,
-    });
-    g.add(box(w, h, 0.05, frame, 0, 0, 0));
-    g.add(box(w - 0.05, h - 0.05, 0.01, screen, 0, 0.025, 0.03));
-    return g;
-  },
-
-  fridge(obj) {
-    const g = new THREE.Group();
-    const { w_m: w, d_m: d, height_m: h, color } = obj;
-    const body = material(color, 1, { metalness: 0.32, roughness: 0.42 });
-    const seam = material(color, 0.78);
-    g.add(box(w, h, d, body, 0, 0, 0));
-    // 냉동실/냉장실 경계선과 손잡이
-    g.add(box(w, 0.02, 0.01, seam, 0, h * 0.68, d / 2 + 0.005));
-    g.add(box(0.03, h * 0.3, 0.04, seam, w * 0.34, h * 0.32, d / 2 + 0.02));
-    return g;
-  },
-
-  aircon(obj) {
-    const g = new THREE.Group();
-    const { w_m: w, height_m: h, color } = obj;
-    g.add(box(w, h, 0.18, material(color, 1), 0, 0, 0));
-    // 아래쪽 토출구
-    g.add(box(w - 0.06, 0.03, 0.02, material(color, 0.72), 0, h * 0.16, 0.1));
-    return g;
-  },
-
-  washer(obj) {
-    const g = new THREE.Group();
-    const { w_m: w, d_m: d, height_m: h, color } = obj;
-    g.add(box(w, h, d, material(color, 1, { metalness: 0.22 }), 0, 0, 0));
-    // 원형 도어
-    const door = new THREE.Mesh(
-      new THREE.CylinderGeometry(Math.min(w, h) * 0.28, Math.min(w, h) * 0.28, 0.03, 20),
-      material("#8fa3ad", 1, { roughness: 0.2, metalness: 0.4 })
-    );
-    door.rotation.x = Math.PI / 2;
-    door.position.set(0, h * 0.5, d / 2 + 0.015);
-    door.castShadow = true;
-    g.add(door);
-    return g;
-  },
-
-  vanity(obj) {
-    const g = new THREE.Group();
-    const { w_m: w, d_m: d, height_m: h, color } = obj;
-    const top = material(color, 1);
-    const leg = material(color, 0.7);
-    g.add(box(w, 0.04, d, top, 0, h - 0.04, 0));
-    addLegs(g, w, d, h - 0.04, leg, 0.05, 0.045);
-    // 뒤쪽(-z)에 거울
-    g.add(box(w * 0.62, h * 0.85, 0.03, material(color, 0.8), 0, h, -d / 2 + 0.02));
-    g.add(box(w * 0.54, h * 0.75, 0.01, new THREE.MeshStandardMaterial({
-      color: new THREE.Color("#d3dde1"), roughness: 0.1, metalness: 0.7,
-    }), 0, h + h * 0.05, -d / 2 + 0.04));
-    return g;
-  },
-
-  nightstand(obj) {
-    const g = new THREE.Group();
-    const { w_m: w, d_m: d, height_m: h, color } = obj;
-    g.add(box(w, h, d, material(color, 0.92), 0, 0, 0));
-    g.add(box(w - 0.05, h * 0.4, 0.02, material(color, 1.12), 0, h * 0.52, d / 2 + 0.005));
-    g.add(cylinder(0.014, 0.04, material("#4a4238", 1), 0, h * 0.7, d / 2 + 0.02, 8));
-    return g;
-  },
-
-  desk_chair(obj) {
-    const g = new THREE.Group();
-    const { w_m: w, d_m: d, height_m: h, color } = obj;
-    const seatH = Math.min(0.46, h * 0.48);
-    const seat = material(color, 1);
-    const metal = material("#6d6d74", 1, { metalness: 0.5, roughness: 0.35 });
-    const radius = Math.max(0.1, Math.min(w, d) / 2);
-    g.add(box(w, 0.07, d, seat, 0, seatH, 0));
-    g.add(box(w * 0.92, h - seatH, 0.06, seat, 0, seatH, -d / 2 + 0.03)); // 등받이
-    g.add(cylinder(0.03, seatH - 0.06, metal, 0, 0.06));                   // 기둥
-    // 바퀴 5개 방사형
-    for (let i = 0; i < 5; i += 1) {
-      const a = (i / 5) * Math.PI * 2;
-      g.add(cylinder(
-        0.025, 0.05, metal,
-        Math.cos(a) * radius * 0.8, 0, Math.sin(a) * radius * 0.8, 8
-      ));
-    }
-    return g;
-  },
-
-  curtain(obj) {
-    const g = new THREE.Group();
-    const { w_m: w, height_m: h, color } = obj;
-    const fabric = material(color, 1, { roughness: 0.94 });
-    // 주름을 얇은 판 여러 장으로 흉내낸다
-    const panels = Math.max(4, Math.round(w / 0.22));
-    const step = w / panels;
-    for (let i = 0; i < panels; i += 1) {
-      const x = -w / 2 + step * (i + 0.5);
-      const depth = i % 2 === 0 ? 0.05 : 0.09;
-      g.add(box(step * 0.94, h, depth, fabric, x, 0, 0));
-    }
-    g.add(box(w + 0.06, 0.03, 0.03, material("#6d6258", 1), 0, h, 0)); // 커튼봉
-    return g;
-  },
-
-  // 스피커·화병·바구니 같은 소품. 받침 위에 둥근 몸체를 얹어 상자와 구분한다.
-  decor(obj) {
-    const g = new THREE.Group();
-    const { w_m: w, d_m: d, height_m: h, color } = obj;
-    const r = Math.max(0.05, Math.min(w, d) / 2);
-    g.add(box(w, h * 0.12, d, material(color, 0.8)));
-    g.add(cylinder(r * 0.8, h * 0.88, material(color, 1.05), 0, h * 0.12, 0, 20));
-    return g;
-  },
-
-  unknown(obj) {
-    const { w_m: w, d_m: d, height_m: h, color } = obj;
-    return box(w, h, d, material(color, 1));
-  },
-};
-
-// ── 파라메트릭 가구 (항목 4·7) ─────────────────────────────
-// 상품 사진에서 뽑은 형태 속성(obj.attrs)으로 모양을 바꾼다. 같은 '소파'라도
-// 좌석 수·팔걸이·등받이 높이·다리 모양이 실제 상품을 따라간다.
-// attrs 키: leg_style, leg_height_ratio, has_armrests, back_height, seat_count,
-//           has_headboard, top_shape, drawer_count, door_count, open_shelves,
-//           material, secondary_color
+// 재질 이름(가죽·금속·유리…)에 맞춘 표면. Gemini 부품 목록의 재질을 그린다
 function surface(hex, attrs, factor = 1) {
   const kind = (attrs && attrs.material) || "";
   const extra = {
@@ -452,217 +44,6 @@ function surface(hex, attrs, factor = 1) {
   return material(hex, factor, extra);
 }
 
-function legHeight(attrs, h, fallback) {
-  const style = attrs.leg_style || "";
-  if (style === "none" || style === "plinth") return 0;
-  const ratio = typeof attrs.leg_height_ratio === "number" && attrs.leg_height_ratio > 0
-    ? attrs.leg_height_ratio
-    : fallback;
-  return Math.max(0, Math.min(h * 0.6, h * ratio));
-}
-
-// 다리 모양별로 받침을 만든다. legH는 바닥에서 몸체 아래까지 높이.
-function addSupport(group, w, d, legH, attrs, mainHex) {
-  const style = attrs.leg_style || "four_legs";
-  const dark = material(attrs.secondary_color || "#3a3632", 1, { metalness: 0.5, roughness: 0.35 });
-  const wood = material(attrs.secondary_color || mainHex, 0.62);
-  if (style === "plinth") {
-    group.add(box(w * 0.94, 0.06, d * 0.94, material(mainHex, 0.5), 0, 0, 0));
-    return 0.06;
-  }
-  if (legH <= 0 || style === "none") return 0;
-  if (style === "pedestal") {
-    group.add(cylinder(Math.min(w, d) * 0.22, 0.02, dark, 0, 0, 0, 24));
-    group.add(cylinder(0.04, legH, dark, 0, 0, 0, 12));
-    return legH;
-  }
-  if (style === "casters") {
-    group.add(cylinder(0.035, legH, dark, 0, 0, 0, 12));
-    for (let i = 0; i < 5; i += 1) {
-      const angle = (i / 5) * Math.PI * 2;
-      const r = Math.min(w, d) * 0.4;
-      const arm = box(r, 0.03, 0.04, dark, Math.cos(angle) * r / 2, 0.03, Math.sin(angle) * r / 2);
-      arm.rotation.y = -angle;
-      group.add(arm);
-    }
-    return legH;
-  }
-  if (style === "sled") {
-    [-1, 1].forEach((side) => {
-      const x = side * (w / 2 - 0.04);
-      group.add(box(0.03, 0.02, d * 0.9, dark, x, 0, 0));
-      group.add(box(0.03, legH, 0.03, dark, x, 0, -d * 0.42));
-      group.add(box(0.03, legH, 0.03, dark, x, 0, d * 0.42));
-    });
-    return legH;
-  }
-  const thin = style === "metal_legs" || style === "hairpin";
-  addLegs(group, w, d, legH, thin ? dark : wood, thin ? 0.04 : 0.06, thin ? 0.022 : 0.05);
-  return legH;
-}
-
-const PARAMETRIC = {
-  sofa(obj) {
-    const g = new THREE.Group();
-    const { w_m: w, d_m: d, height_m: h, color } = obj;
-    const a = obj.attrs || {};
-    const body = surface(color, a, 1);
-    const cushion = surface(color, a, 1.16);
-    const lift = addSupport(g, w, d, legHeight(a, h, 0.12), a, color);
-    const seatH = Math.max(0.18, h * 0.45 - lift);
-    const backH = { none: 0, low: h * 0.62, mid: h * 0.95, high: h * 1.2 }[a.back_height || "mid"] || h * 0.95;
-    const arm = a.has_armrests === false ? 0 : Math.min(0.2, w * 0.12);
-    g.add(box(w, seatH, d, body, 0, lift, 0));
-    if (backH > 0) g.add(box(w, backH - lift, d * 0.22, body, 0, lift, -d / 2 + d * 0.11));
-    if (arm > 0) {
-      [-w / 2 + arm / 2, w / 2 - arm / 2].forEach((ax) => g.add(box(arm, h * 0.66 - lift, d, body, ax, lift, 0)));
-    }
-    const seats = Math.max(1, Math.min(6, a.seat_count || Math.round((w - arm * 2) / 0.65)));
-    const span = (w - arm * 2 - 0.04) / seats;
-    for (let i = 0; i < seats; i += 1) {
-      const x = -w / 2 + arm + 0.02 + span * (i + 0.5);
-      g.add(box(span - 0.025, h * 0.14, d * 0.66, cushion, x, lift + seatH, d * 0.1));
-      if (backH > 0) g.add(box(span - 0.04, (backH - lift - seatH) * 0.8, d * 0.1, cushion, x, lift + seatH, -d / 2 + d * 0.26));
-    }
-    return g;
-  },
-
-  bed(obj) {
-    const g = new THREE.Group();
-    const { w_m: w, d_m: d, height_m: h, color } = obj;
-    const a = obj.attrs || {};
-    const frame = surface(color, a, 0.6);
-    const sheet = material("#f2ece0", 1);
-    const lift = addSupport(g, w, d, legHeight(a, h, 0.25), a, color);
-    const frameH = Math.max(0.12, h * 0.55 - lift);
-    g.add(box(w, frameH, d, frame, 0, lift, 0));
-    g.add(box(w * 0.94, h * 0.4, d * 0.94, sheet, 0, lift + frameH, 0));
-    g.add(box(w * 0.92, h * 0.1, d * 0.58, surface(color, a, 1.08), 0, lift + frameH + h * 0.4, d * 0.19));
-    const pillows = w > 1.25 ? [-w * 0.23, w * 0.23] : [0];
-    pillows.forEach((px) => g.add(box(Math.min(0.6, w * 0.38), h * 0.14, d * 0.15, sheet, px, lift + frameH + h * 0.4, -d * 0.37)));
-    if (a.has_headboard !== false) g.add(box(w, h * 1.8, 0.07, frame, 0, 0, -d / 2 + 0.035));
-    return g;
-  },
-
-  desk(obj) {
-    const g = new THREE.Group();
-    const { w_m: w, d_m: d, height_m: h, color } = obj;
-    const a = obj.attrs || {};
-    const top = surface(color, a, 1);
-    const thickness = 0.035;
-    const round = a.top_shape === "round" || a.top_shape === "oval";
-    if (round) {
-      const disc = cylinder(0.5, thickness, top, 0, h - thickness, 0, 40);
-      disc.scale.set(w, 1, d);
-      g.add(disc);
-    } else {
-      g.add(box(w, thickness, d, top, 0, h - thickness, 0));
-    }
-    const legs = { ...a, leg_style: a.leg_style && a.leg_style !== "plinth" && a.leg_style !== "none" ? a.leg_style : (round ? "pedestal" : "four_legs") };
-    addSupport(g, round ? w * 0.6 : w, round ? d * 0.6 : d, h - thickness, legs, color);
-    const drawers = Math.min(4, a.drawer_count || 0);
-    if (drawers && !round) {
-      const unitW = Math.min(0.45, w * 0.35);
-      const unitH = Math.min(h * 0.6, 0.16 * drawers);
-      g.add(box(unitW, unitH, d * 0.9, surface(color, a, 0.92), w / 2 - unitW / 2 - 0.03, h - thickness - unitH, 0));
-      for (let i = 0; i < drawers; i += 1) {
-        g.add(box(unitW - 0.03, unitH / drawers - 0.015, 0.015, surface(color, a, 1.1), w / 2 - unitW / 2 - 0.03, h - thickness - unitH + (unitH / drawers) * i + 0.008, d * 0.45 + 0.008));
-      }
-    }
-    return g;
-  },
-
-  table(obj) {
-    return PARAMETRIC.desk(obj);
-  },
-
-  low_table(obj) {
-    return PARAMETRIC.desk(obj);
-  },
-
-  chair(obj) {
-    const g = new THREE.Group();
-    const { w_m: w, d_m: d, height_m: h, color } = obj;
-    const a = obj.attrs || {};
-    const seat = surface(color, a, 1);
-    const seatH = Math.min(0.47, h * 0.5);
-    addSupport(g, w, d, seatH - 0.05, { ...a, leg_style: a.leg_style && a.leg_style !== "none" ? a.leg_style : "four_legs" }, color);
-    g.add(box(w, 0.06, d, seat, 0, seatH - 0.05, 0));
-    const backH = { none: 0, low: (h - seatH) * 0.45, mid: (h - seatH) * 0.75, high: h - seatH }[a.back_height || "high"] ?? h - seatH;
-    if (backH > 0) g.add(box(w, backH, 0.05, seat, 0, seatH, -d / 2 + 0.025));
-    if (a.has_armrests) {
-      [-w / 2 + 0.03, w / 2 - 0.03].forEach((ax) => g.add(box(0.05, 0.04, d * 0.8, seat, ax, seatH + 0.2, 0)));
-    }
-    return g;
-  },
-
-  desk_chair(obj) {
-    return PARAMETRIC.chair({ ...obj, attrs: { leg_style: "casters", has_armrests: true, back_height: "high", ...(obj.attrs || {}) } });
-  },
-
-  cabinet(obj) {
-    const g = new THREE.Group();
-    const { w_m: w, d_m: d, height_m: h, color } = obj;
-    const a = obj.attrs || {};
-    const lift = addSupport(g, w, d, legHeight(a, h, 0.12), a, color);
-    const bodyH = h - lift;
-    const body = surface(color, a, 0.9);
-    const front = surface(color, a, 1.12);
-    const knob = material("#4a4238", 1);
-    g.add(box(w, bodyH, d, body, 0, lift, 0));
-    const zFront = d / 2 + 0.006;
-    const drawers = Math.min(8, a.drawer_count || 0);
-    const doors = Math.min(4, a.door_count || 0);
-    const shelves = Math.min(6, a.open_shelves || 0);
-    if (shelves && !doors && !drawers) {
-      // 오픈 수납: 앞면을 비우고 칸막이만 보인다
-      g.children[g.children.length - 1].material = surface(color, a, 0.7);
-      for (let i = 1; i <= shelves; i += 1) {
-        g.add(box(w - 0.04, 0.02, 0.02, front, 0, lift + (bodyH / (shelves + 1)) * i, zFront));
-      }
-      return g;
-    }
-    let y = lift + 0.03;
-    if (drawers) {
-      const zone = doors ? bodyH * 0.35 : bodyH - 0.06;
-      const each = zone / drawers;
-      for (let i = 0; i < drawers; i += 1) {
-        g.add(box(w - 0.04, each - 0.02, 0.02, front, 0, y + each * i, zFront));
-        g.add(box(Math.min(0.14, w * 0.25), 0.015, 0.02, knob, 0, y + each * i + each / 2, zFront + 0.015));
-      }
-      y += zone;
-    }
-    if (doors) {
-      const top = lift + bodyH - 0.03;
-      const each = (w - 0.04) / doors;
-      for (let i = 0; i < doors; i += 1) {
-        const x = -w / 2 + 0.02 + each * (i + 0.5);
-        g.add(box(each - 0.015, top - y, 0.02, front, x, y, zFront));
-        g.add(box(0.015, Math.min(0.2, (top - y) * 0.3), 0.02, knob, x + (i % 2 ? -each / 2 + 0.05 : each / 2 - 0.05), y + (top - y) * 0.45, zFront + 0.015));
-      }
-    }
-    return g;
-  },
-
-  wardrobe(obj) {
-    return PARAMETRIC.cabinet({ ...obj, attrs: { door_count: 2, leg_style: "plinth", ...(obj.attrs || {}) } });
-  },
-  dresser(obj) {
-    return PARAMETRIC.cabinet({ ...obj, attrs: { drawer_count: 4, leg_style: "plinth", ...(obj.attrs || {}) } });
-  },
-  nightstand(obj) {
-    return PARAMETRIC.cabinet({ ...obj, attrs: { drawer_count: 2, leg_style: "plinth", ...(obj.attrs || {}) } });
-  },
-  shelf(obj) {
-    const a = obj.attrs || {};
-    if (!a.door_count && !a.drawer_count) return BUILDERS.shelf(obj);
-    return PARAMETRIC.cabinet(obj);
-  },
-};
-
-// Gemini 가 준 부품 설계도로 가구를 세운다. 좌표는 가구 치수에 대한 비율이라
-// 여기서 미터로 환산한다. (규약은 gemini_furniture_parts.py 의 docstring)
-// 손으로 짠 BUILDERS 보다 형태가 나을 때만 쓰이고, 설계도가 없으면 호출되지 않는다.
 function buildFromParts(obj, parts) {
   const { w_m: w, d_m: d, height_m: h, color } = obj;
   const g = new THREE.Group();
@@ -766,8 +147,6 @@ function viewTexture(url) {
 // 높이는 Gemini가 2D 그림을 그릴 때 도형마다 적은 값(data-z0·z1, 가구 높이 대비
 // 비율)을 쓴다. 그 값이 없는 예전 그림·기본 모양은 아래 규칙으로 정한다.
 const SVG_LOADER = new SVGLoader();
-// 상판 아래에 다리가 보여야 자연스러운 종류. 높이 정보가 없을 때 다리를 붙인다
-const LEGGED_TYPES = new Set(["desk", "table", "low_table", "chair", "desk_chair", "stool", "bench", "nightstand", "vanity"]);
 const DECAL_M = 0.004;
 
 function svgAttr(node, name) {
@@ -974,33 +353,14 @@ function buildSolid(obj) {
     return group;
   }
 
-  // 높이 정보가 없을 때: 가장 큰 도형을 몸체로, 그 뒤 도형은 몸체 위에 얹는다.
-  // 몸체보다 앞에 그린 도형은 대개 바닥 그림자라 뺀다
-  const footprint = obj.w_m * obj.d_m;
-  let baseIndex = parts.findIndex((p) => p.area >= footprint * 0.4);
-  if (baseIndex < 0) baseIndex = parts.reduce((best, p, i) => (p.area > parts[best].area ? i : best), 0);
+  // 높이 정보가 없을 때(2D 기본 모양 등): 가장 큰 도형을 몸체로 가구 높이까지 세우고,
+  // 그 뒤에 그린 도형은 윗면 무늬로 붙인다. 몸체보다 앞에 그린 도형은 대개 바닥 그림자라 뺀다
+  const baseIndex = parts.reduce((best, p, i) => (p.area > parts[best].area ? i : best), 0);
   const base = parts[baseIndex];
-  const legged = LEGGED_TYPES.has(obj.type);
-  const slab = legged ? Math.min(0.05, H * 0.12) : H;
-  group.add(extrude(base.shapes, H - slab, H, base.color, { soft: obj.type === "bed" || obj.type === "sofa" ? 0.4 : 0.1 }));
-  if (legged) {
-    const leg = Math.max(0.03, Math.min(obj.w_m, obj.d_m) * 0.06);
-    const inset = leg * 1.2;
-    const legColor = shade(base.color, 0.8);
-    [[-1, -1], [1, -1], [-1, 1], [1, 1]].forEach(([ix, iz]) => {
-      group.add(box(
-        leg, H - slab, leg, material(legColor),
-        ix * (obj.w_m / 2 - inset), 0, iz * (obj.d_m / 2 - inset)
-      ));
-    });
-  }
+  group.add(extrude(base.shapes, 0, H, base.color));
   parts.slice(baseIndex + 1).forEach((p, i) => {
     const lift = (i + 1) * 0.0006;
-    // 중간 크기 도형(쿠션·베개)은 조금 도톰하게, 작은 무늬는 얇게 붙인다.
-    // 몸체만 한 도형은 대개 윗면 테두리·안쪽 면이라 도톰하게 올리면 가구가 높아진다
-    const share = p.area / footprint;
-    const raised = share >= 0.08 && share < 0.6 ? Math.min(0.06, H * 0.12) : DECAL_M;
-    group.add(extrude(p.shapes, H + lift, H + raised + lift, p.color, { soft: raised > DECAL_M ? 0.6 : 0, opacity: p.opacity }));
+    group.add(extrude(p.shapes, H + lift, H + DECAL_M + lift, p.color, { opacity: p.opacity }));
   });
   return group;
 }
@@ -1236,23 +596,25 @@ class Floorplan3D {
       // 문·창문은 3D에 세우지 않는다. 기본 상자 모양이 오히려 방을 어색하게 보이게 해서
       // 위치 확인은 2D 평면도로 한다(배치 계산의 문 앞 비우기는 서버에서 그대로 한다)
       if (obj.type === "door" || obj.type === "window") return;
-      // 설계도가 있으면 그것으로, 없으면 손으로 짠 빌더로 세운다.
-      // 설계도는 Gemini 호출이라 없을 수 있어서 항상 빌더가 뒤를 받친다.
-      // 모양은 멀티모달 모델이 가구별로 만든 부품 목록이 우선이다. 아직 없거나 실패한
-      // 가구만 파라메트릭 모양으로 그린다. 타입 단위 옛 설계도는 상품에는 쓰지 않는다
+      // 모양은 2D SVG 돌출(아래)이 기본이다. Gemini 부품 목록이 있으면 그것을 쓴다.
+      // 손으로 짠 기본 모양은 없다. node는 고르기·끌기 판정용 상자로, 보이지 않는다
       const own = (this.data.object_parts || {})[obj.id];
       const typeRecipe = obj.is_product ? null : (this.data.furniture_parts || {})[obj.type];
       const recipe = own && own.parts && own.parts.length ? own : typeRecipe;
-      const build = PARAMETRIC[obj.type] || BUILDERS[obj.type] || BUILDERS.unknown;
-      const useRecipe = recipe && recipe.parts && recipe.parts.length;
-      let node;
-      try {
-        node = useRecipe
-          ? buildFromParts(obj, recipe.parts)
-          : build(obj);
-      } catch (error) {
-        console.warn("[floorplan-3d] 가구 생성 실패, 기본 도형으로 대체:", obj.type, error);
-        node = BUILDERS.unknown(obj);
+      let node = null;
+      if (recipe && recipe.parts && recipe.parts.length) {
+        try {
+          node = buildFromParts(obj, recipe.parts);
+        } catch (error) {
+          console.warn("[floorplan-3d] 부품 목록으로 세우지 못했습니다:", obj.id, error);
+        }
+      }
+      if (!node) {
+        node = new THREE.Mesh(
+          new THREE.BoxGeometry(obj.w_m, obj.height_m, obj.d_m),
+          new THREE.MeshBasicMaterial({ visible: false })
+        );
+        node.position.y = obj.height_m / 2;
       }
 
       // 방 중심을 원점으로 옮긴다. cy(깊이)는 three.js 의 z 축.
@@ -1289,6 +651,10 @@ class Floorplan3D {
         // 숨긴 모형은 고르기·끌기 판정에만 쓴다
         node.visible = false;
         wrapper.add(solid);
+      } else if (!hasViews && !node.isGroup) {
+        // 세울 그림이 없다. 기본 모양 대신 바닥 자리만 보여 준다
+        artState = wantsArt && !failedViews.has(obj.id) ? "drawing" : "failed";
+        wrapper.add(makePlaceholder(obj, artState === "failed"));
       } else if (wantsArt && !hasViews) {
         // 기본 모양은 보여 주지 않는다. 숨긴 모형은 고르기·끌기 판정에만 쓴다
         node.visible = false;

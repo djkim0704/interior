@@ -61,11 +61,11 @@ class SpatialFitTests(unittest.TestCase):
         self.assertGreater(same["size"], tiny["size"])
         self.assertEqual(same["placement"], {"cx": 1.8, "cy": 3.5})
 
-    def test_unknown_size_is_flagged_and_capped(self) -> None:
+    def test_unknown_size_is_not_measured(self) -> None:
+        # 표준 크기로 지어내 재지 않는다
         fit = spatial_fit.make_scorer(_room([]), "desk")({"title": "감성 책상"})
-        self.assertEqual(fit["dimensions"]["dimension_source"], "type_default")
-        self.assertLessEqual(fit["size"], 0.5)
-        self.assertIn("크기 정보가 없어 표준 크기로 계산했어요", fit["reasons"])
+        self.assertEqual((fit["dimensions"], fit["space"], fit["size"], fit["fits"]), (None, None, None, None))
+        self.assertIn("치수 정보가 없어 공간 적합도를 재지 못했어요", fit["reasons"])
 
     def test_combine_pushes_non_fitting_down(self) -> None:
         good = spatial_fit.combine(0.6, {"space": 1.0, "size": 1.0, "fits": True})

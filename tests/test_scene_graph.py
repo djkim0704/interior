@@ -123,16 +123,16 @@ class CalibrationTests(unittest.TestCase):
 
 
 class EnsureTests(unittest.TestCase):
-    def test_legacy_only_product_gets_metric_fields_and_default_size(self) -> None:
+    def test_legacy_only_product_gets_metric_fields_from_its_size(self) -> None:
         graph = scene_graph.from_analysis(_analysis(), width_m=4.0, depth_m=5.0)
         graph["objects"].append(
-            {"type": "shelf", "label": "선반", "x": 0.24, "y": 0.24, "w": 0.0, "h": 0.0,
+            {"type": "shelf", "label": "선반", "x": 0.24, "y": 0.24, "w": 0.0, "h": 0.0, "w_m": 0.8, "d_m": 0.3,
              "wall": "left", "source": "selected_product", "product_marker": 1}
         )
         fixed = scene_graph.ensure(graph)
         product = fixed["objects"][-1]
         self.assertEqual(product["id"], "product_1")
-        self.assertEqual((product["w_m"], product["d_m"]), scene_graph.DEFAULT_SIZES["shelf"])
+        self.assertEqual((product["w_m"], product["d_m"]), (0.8, 0.3))
         self.assertEqual(product["rotation_deg"], 270.0)
         self.assertGreater(product["w"], 0)
 

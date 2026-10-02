@@ -61,6 +61,7 @@ Schema:
     "aspect_ratio_width_to_depth": 0.5,
     "floor_color": "#6b4935",
     "wall_color": "#f4efe4",
+    "ceiling_height_m": 2.3,
     "summary_ko": "짧은 설명"
   },
   "objects": [
@@ -72,6 +73,8 @@ Schema:
       "y": 0.4,
       "width": 0.45,
       "depth": 0.55,
+      "height_m": 0.45,
+      "elevation_m": 0.0,
       "rotation_deg": 0,
       "wall_anchors": ["top", "left"],
       "relations": [
@@ -116,6 +119,15 @@ Scale and size:
 - width and depth are the object's footprint as seen from above; do not include
   its shadow or the empty space around it. Objects farther from the camera look
   smaller in the photo; correct for perspective.
+- height_m is the object's real vertical height in metres (floor to its top,
+  or for wall-mounted things like windows, mirrors, TVs and curtains, their
+  own height). Estimate it from the photo for EVERY object; do not use a
+  generic value for the category when the photo shows otherwise (a floor table
+  is much lower than a dining table, shelving units vary from 0.6 to 2.2 m).
+- elevation_m is how high the bottom of the object is above the floor in
+  metres: 0 for furniture standing on the floor, the sill height for windows,
+  the mounting height for TVs, mirrors and air conditioners.
+- room.ceiling_height_m is the floor-to-ceiling height in metres.
 Keep every numeric value within its stated range.
 """.strip()
 
@@ -249,6 +261,17 @@ def _number(value: Any, default: float, low: float, high: float) -> float:
         return default
 
 
+def _optional_number(value: Any, low: float, high: float) -> float | None:
+    """있으면 범위 안의 숫자, 없거나 이상하면 None(기본값을 지어내지 않는다)."""
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return None
+    if result != result or result < low or result > high:
+        return None
+    return round(result, 3)
+
+
 def normalize_layout(layout: dict[str, Any]) -> dict[str, Any]:
     room = layout.get("room")
     if not isinstance(room, dict):
@@ -275,6 +298,10 @@ def normalize_layout(layout: dict[str, Any]) -> dict[str, Any]:
         raw["depth"] = _number(raw.get("depth"), 0.15, 0.025, 1.0)
         raw["rotation_deg"] = _number(raw.get("rotation_deg"), 0.0, -360.0, 360.0)
         raw["confidence"] = _number(raw.get("confidence"), 0.5, 0.0, 1.0)
+        # 높이는 사진에서 추정한 값만 쓴다. 없으면 비워 두고 Scene Graph가 같은 방
+        # 가구들의 비율로 채운다(종류별 고정 높이표는 쓰지 않는다)
+        raw["height_m"] = _optional_number(raw.get("height_m"), 0.02, 4.0)
+        raw["elevation_m"] = _optional_number(raw.get("elevation_m"), 0.0, 3.0)
         anchors = raw.get("wall_anchors") or []
         if isinstance(anchors, str):
             anchors = [anchors]

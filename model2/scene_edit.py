@@ -128,9 +128,13 @@ def apply_ops(layout: dict[str, Any], ops: list[dict[str, Any]]) -> tuple[dict[s
             kind = scene_graph.object_type(raw.get("type"))
             if kind not in EDITABLE_TYPES:
                 raise EditError("추가할 수 없는 종류입니다.")
-            default_w, default_d = scene_graph.DEFAULT_SIZES.get(kind, scene_graph.DEFAULT_SIZES["unknown"])
-            w_m = min(MAX_SIZE_M, max(MIN_SIZE_M, _number(raw.get("w_m", default_w), "w_m")))
-            d_m = min(MAX_SIZE_M, max(MIN_SIZE_M, _number(raw.get("d_m", default_d), "d_m")))
+            # 크기는 사용자가 넣은 값만 쓴다(종류별 표준 크기는 없다). 문·창은 벽 두께 쪽이 얇다
+            if raw.get("w_m") is None:
+                raise EditError("추가할 크기(폭)를 입력해 주세요.")
+            w_m = min(MAX_SIZE_M, max(MIN_SIZE_M, _number(raw.get("w_m"), "w_m")))
+            if raw.get("d_m") is None and kind not in scene_graph.WALL_MOUNTED_TYPES:
+                raise EditError("추가할 크기(깊이)를 입력해 주세요.")
+            d_m = min(MAX_SIZE_M, max(MIN_SIZE_M, _number(raw.get("d_m", scene_graph.WALL_MOUNTED_MAX_DEPTH_M), "d_m")))
             wall = str(raw.get("wall") or "none")
             if kind in scene_graph.WALL_MOUNTED_TYPES:
                 if wall not in scene_graph.WALLS:

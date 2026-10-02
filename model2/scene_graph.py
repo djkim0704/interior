@@ -28,7 +28,6 @@ from typing import Any
 SCHEMA = "scene_graph_v1"
 
 DEFAULT_LONG_SIDE_M = 4.0
-DEFAULT_CEILING_M = 2.4
 MIN_ASPECT, MAX_ASPECT = 0.35, 2.5
 MIN_ROOM_SIDE_M, MAX_ROOM_SIDE_M = 1.5, 12.0
 WALL_GAP_M = 0.04  # 벽걸이 객체가 벽에서 떨어진 거리. floorplan_3d.js와 같아야 한다
@@ -103,8 +102,7 @@ CATEGORY_TO_TYPE = {
     "window": "window",
 }
 
-# 타입별 실제 높이·띄움 높이. floorplan_3d.TYPE_PRESETS와 같은 값을 쓴다.
-# (3D 프리셋을 그대로 import하면 순환 참조가 생겨 여기서 기본값만 둔다)
+# 벽에 붙는 종류. 3D는 이 객체를 벽면에 붙여 세운다
 WALL_MOUNTED_TYPES = {"door", "window", "mirror", "tv", "aircon", "curtain"}
 # 등을 벽에 붙이는 게 자연스러운 가구. 이 타입만 벽 방향으로 회전시킨다.
 WALL_FACING_TYPES = {
@@ -150,40 +148,6 @@ PRIOR_WEIGHT = 0.6
 # 이보다 두꺼우면 벽을 뚫고 나간다.
 WALL_MOUNTED_MAX_DEPTH_M = 0.08
 
-# 상품처럼 크기가 비어 들어온 객체에 쓰는 표준 크기(폭, 깊이, m)
-DEFAULT_SIZES = {
-    "bed": (1.5, 2.0),
-    "sofa": (1.9, 0.9),
-    "desk": (1.2, 0.6),
-    "table": (1.2, 0.8),
-    "low_table": (0.9, 0.5),
-    "chair": (0.5, 0.5),
-    "desk_chair": (0.6, 0.6),
-    "floor_chair": (0.55, 0.6),
-    "stool": (0.4, 0.4),
-    "bench": (1.2, 0.4),
-    "shelf": (0.8, 0.3),
-    "cabinet": (0.8, 0.45),
-    "dresser": (0.8, 0.45),
-    "wardrobe": (1.2, 0.6),
-    "vanity": (0.8, 0.45),
-    "nightstand": (0.45, 0.4),
-    "rug": (1.6, 1.2),
-    "mirror": (0.5, 0.05),
-    "lamp": (0.35, 0.35),
-    "plant": (0.4, 0.4),
-    "tv": (1.2, 0.08),
-    "fridge": (0.75, 0.7),
-    "washer": (0.6, 0.6),
-    "aircon": (0.9, 0.25),
-    "curtain": (1.6, 0.12),
-    "door": (0.9, 0.1),
-    "window": (1.2, 0.1),
-    "decor": (0.3, 0.3),
-    "unknown": (0.5, 0.5),
-}
-
-
 # ---------------------------------------------------------------- 기본 도구
 
 def _number(value: Any, default: float, low: float | None = None, high: float | None = None) -> float:
@@ -221,25 +185,37 @@ def object_type(category: Any) -> str:
     return "decor" if key in {"speaker", "decor", "decoration", "vase", "clock", "frame", "basket"} else "unknown"
 
 
-# 분석이 종류를 'table'·'storage'처럼 넓게 줘도 이름에는 높이 단서가 있다. 좌식 테이블을
-# 식탁 높이(74cm)로 세우면 다리 없는 상판이 허리 높이에 떠 보이고, 'storage'는
-# 종류표에 없어 모든 수납장이 같은 기본 높이가 된다
-_NAME_HINTS = (
-    (("좌식", "낮은", "로우", "커피", "티테이블", "티 테이블", "찻상", "소파 테이블", "coffee", "low"), "low_table", {"table"}),
-    (("협탁", "사이드 테이블", "사이드테이블", "side table", "nightstand", "bedside"), "nightstand", {"table", "cabinet", "unknown"}),
-    (("선반", "책장", "shelf", "bookcase"), "shelf", {"table", "cabinet", "unknown"}),
-    (("서랍", "drawer", "dresser"), "dresser", {"table", "cabinet", "unknown"}),
-    (("수납장", "캐비닛", "cabinet", "sideboard"), "cabinet", {"unknown"}),
-)
+def fill_missing_heights(objects: list[dict[str, Any]]) -> None:
+    """높이가 빠진 객체를 같은 방 가구의 '높이 ÷ 긴 변' 비율로 채운다.
+
+    종류별 고정 높이표 대신, 사진에서 높이를 추정한 다른 가구들의 비율을 빌린다.
+    방 안에 높이를 아는 가구가 하나도 없으면 짧은 변 길이를 높이로 쓴다.
+    """
+    ratios = sorted(
+        float(o["h_m"]) / max(float(o["w_m"]), float(o["d_m"]))
+        for o in objects
+        if _positive(o.get("h_m")) and o.get("type") not in WALL_MOUNTED_TYPES
+        and max(float(o.get("w_m") or 0), float(o.get("d_m") or 0)) > 0
+    )
+    median = ratios[len(ratios) // 2] if ratios else None
+    for obj in objects:
+        if _positive(obj.get("h_m")):
+            continue
+        w, d = float(obj.get("w_m") or 0), float(obj.get("d_m") or 0)
+        if w <= 0 or d <= 0:
+            continue
+        obj["h_m"] = round(median * max(w, d) if median else min(w, d), 3)
+        obj["h_source"] = "room_ratio" if median else "footprint"
 
 
-def refine_type(kind: str, label: Any) -> str:
-    """이름으로 넓은 종류(테이블·수납)를 좁힌다. 이미 구체적인 종류는 그대로 둔다."""
-    text = str(label or "").lower()
-    for words, target, applies_to in _NAME_HINTS:
-        if kind in applies_to and any(word in text for word in words):
-            return target
-    return kind
+def ceiling_from_objects(objects: list[dict[str, Any]]) -> float:
+    """천장 높이를 모르면 가장 높이 닿는 객체(문 위끝 등)를 천장으로 본다."""
+    tops = [
+        float(o.get("base_m") or 0) + float(o["h_m"])
+        for o in objects
+        if _positive(o.get("h_m"))
+    ]
+    return max(tops) if tops else 0.0
 
 
 def _is_quarter_turn(rotation: float) -> bool:
@@ -404,7 +380,7 @@ def from_analysis(
         if not isinstance(raw, dict):
             continue
         category = str(raw.get("category") or "unknown").lower()
-        kind = refine_type(object_type(category), raw.get("label_ko") or raw.get("label"))
+        kind = object_type(category)
         anchors = [a for a in raw.get("wall_anchors") or [] if a in WALLS]
         gemini_rotation = _number(raw.get("rotation_deg"), 0.0) % 360
         nx = _number(raw.get("x"), 0.5, 0.0, 1.0)
@@ -491,15 +467,24 @@ def from_analysis(
             "material": raw.get("material"),
             "pattern": raw.get("pattern"),
             "photo_box": raw.get("photo_box"),
+            # 높이·띄움 높이는 분석이 사진에서 추정한 값이다
+            "h_m": _positive(raw.get("height_m")),
+            "base_m": _number(raw.get("elevation_m"), 0.0, 0.0, 3.0),
         }
         objects.append(obj)
+    fill_missing_heights(objects)
 
     graph = {
         "schema": SCHEMA,
         "renderer_source": "scene_graph",
         "room": {
             **room,
-            "ceiling_m": round(_positive(ceiling_m) or DEFAULT_CEILING_M, 3),
+            "ceiling_m": round(
+                _positive(ceiling_m)
+                or _positive(room_in.get("ceiling_height_m"))
+                or ceiling_from_objects(objects),
+                3,
+            ),
             "shape": room_in.get("shape") or "rectangle",
             "floor_color": room_in.get("floor_color"),
             "wall_color": room_in.get("wall_color"),
@@ -594,7 +579,7 @@ def ensure(layout: dict[str, Any], *, solve_new: bool = True) -> dict[str, Any]:
     """기존 라우트를 거친 Scene Graph를 다시 일관된 상태로 맞춘다.
 
     상품 추가처럼 legacy 필드만 채워 넣은 객체는 미터 값을 legacy에서 복원한다.
-    크기가 0이면 타입별 표준 크기를 쓴다. solve_new=True면 새로 들어온 객체만
+    크기를 모르는 객체는 지어낸 크기로 놓지 않고 뺀다. solve_new=True면 새로 들어온 객체만
     빈자리로 옮긴다(기존 가구는 그대로 둔다). 고정 슬롯(PURCHASE_POSITIONS)에
     놓인 상품이 다른 가구와 겹치던 문제를 여기서 푼다.
     """
@@ -617,7 +602,9 @@ def ensure(layout: dict[str, Any], *, solve_new: bool = True) -> dict[str, Any]:
                 # 상품 실측 치수처럼 미터 크기만 먼저 들어온 경우 그대로 쓴다
                 w_m, d_m = float(obj["w_m"]), float(obj["d_m"])
             elif plan_w <= 0.01 or plan_d <= 0.01:
-                w_m, d_m = DEFAULT_SIZES.get(kind, DEFAULT_SIZES["unknown"])
+                # 크기를 모르는 객체는 지어낸 크기로 놓지 않는다(상품은 치수가 없으면 추가 단계에서 막는다)
+                obj["_drop"] = True
+                continue
             else:
                 w_m, d_m = local_from_plan(plan_w, plan_d, rotation)
             obj.update(
@@ -649,6 +636,9 @@ def ensure(layout: dict[str, Any], *, solve_new: bool = True) -> dict[str, Any]:
         obj.setdefault("label", obj["type"])
         obj.setdefault("confidence", 1.0 if obj.get("source") == "selected_product" else 0.5)
         new_ids.append(str(obj["id"]))
+    graph["objects"] = [o for o in graph.get("objects") or [] if not o.pop("_drop", False)]
+    # 치수표에 높이가 없던 상품 등은 같은 방 가구 비율로 높이를 채운다
+    fill_missing_heights(graph["objects"])
     _place_wall_mounted(graph)
     if new_ids and solve_new:
         from .placement_solver import solve as solve_placement

@@ -74,8 +74,13 @@ class OpsTests(unittest.TestCase):
         self.assertNotIn("box_1", [o["id"] for o in edited["objects"]])
         self.assertEqual([o["source_index"] for o in edited["objects"]], list(range(len(edited["objects"]))))
 
+    def test_add_requires_width(self) -> None:
+        # 표준 문 폭을 가정하지 않는다
+        with self.assertRaises(scene_edit.EditError):
+            scene_edit.apply_ops(_graph(), [{"op": "add", "type": "door", "wall": "left", "offset": 0.5}])
+
     def test_add_door_on_wall(self) -> None:
-        edited, changed = scene_edit.apply_ops(_graph(), [{"op": "add", "type": "door", "wall": "left", "offset": 0.7}])
+        edited, changed = scene_edit.apply_ops(_graph(), [{"op": "add", "type": "door", "wall": "left", "offset": 0.7, "w_m": 0.9}])
         door = _obj(edited, changed[0])
         self.assertEqual(door["type"], "door")
         self.assertAlmostEqual(door["cx"], scene_graph.WALL_GAP_M, places=4)
@@ -86,7 +91,7 @@ class OpsTests(unittest.TestCase):
 
     def test_add_door_on_bottom_and_right_walls_stays_on_that_wall(self) -> None:
         for wall, rotation in (("bottom", 180.0), ("right", 90.0)):
-            edited, changed = scene_edit.apply_ops(_graph(), [{"op": "add", "type": "door", "wall": wall, "offset": 0.2}])
+            edited, changed = scene_edit.apply_ops(_graph(), [{"op": "add", "type": "door", "wall": wall, "offset": 0.2, "w_m": 0.9}])
             door = _obj(edited, changed[0])
             self.assertEqual((door["wall"], door["rotation_deg"]), (wall, rotation))
             if wall == "bottom":

@@ -532,7 +532,7 @@
   src="{{ url_for(
     'static',
     filename='js/result_toggle.js',
-    v='20261003-rods'
+    v='20261003-no-hardcode'
   ) }}"
 ></script>
 
@@ -540,7 +540,7 @@
   src="{{ url_for(
     'static',
     filename='js/result_products.js',
-    v='20261003-rods'
+    v='20261003-no-hardcode'
   ) }}"
 ></script>
 {% if scene_3d %}
@@ -555,6 +555,6 @@
     }
   }
 </script>
-<script type="module" src="{{ url_for('static', filename='js/floorplan_3d.js', v='20261003-rods') }}"></script>
+<script type="module" src="{{ url_for('static', filename='js/floorplan_3d.js', v='20261003-no-hardcode') }}"></script>
 {% endif %}
 {% endblock %}

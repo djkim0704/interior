@@ -43,13 +43,17 @@ Return JSON only:
   "door_count": 0,
   "open_shelves": 0,
   "visible_dimensions_cm": {{"width": null, "depth": null, "height": null}},
+  "estimated_dimensions_cm": {{"width": 120, "depth": 60, "height": 74}},
   "confidence": 0.8
 }}
 
 Rules:
 - leg_height_ratio is the visible leg height divided by the total height (0 if no legs).
 - visible_dimensions_cm only if numbers are printed in the image (a size chart);
-  otherwise keep nulls. Never guess numbers.
+  otherwise keep nulls. Never guess numbers there.
+- estimated_dimensions_cm is your best estimate of the real product size from
+  the photo and the title (width = side parallel to the back, depth = front to
+  back, height = floor to top). Always fill it.
 - Use the closest allowed value for every enum.
 """.strip()
 
@@ -71,6 +75,24 @@ def _int(value: Any, low: int, high: int) -> int:
         return low
 
 
+def _dims_cm(value: Any) -> dict[str, float] | None:
+    """{"width", "depth", "height"} cm → m. 폭·깊이가 없거나 범위 밖이면 None."""
+    if not isinstance(value, dict):
+        return None
+    try:
+        width, depth = float(value.get("width")), float(value.get("depth"))
+    except (TypeError, ValueError):
+        return None
+    if not (8 <= width <= 400 and 8 <= depth <= 400):
+        return None
+    try:
+        height = float(value.get("height"))
+        h_m = round(height / 100, 3) if 2 <= height <= 300 else None
+    except (TypeError, ValueError):
+        h_m = None
+    return {"w_m": round(width / 100, 3), "d_m": round(depth / 100, 3), "h_m": h_m}
+
+
 def normalize(raw: dict[str, Any]) -> dict[str, Any]:
     """모델 응답을 허용 값으로 묶는다. 이상한 값이 와도 3D가 깨지지 않게 한다."""
     try:
@@ -90,6 +112,8 @@ def normalize(raw: dict[str, Any]) -> dict[str, Any]:
             }
     except (TypeError, ValueError, AttributeError):
         dims = None
+    # 치수표가 없을 때 쓰는 Gemini 추정치. 종류별 표준 크기표 대신 이 값을 쓴다
+    estimate = _dims_cm(raw.get("estimated_dimensions_cm"))
     try:
         confidence = max(0.0, min(1.0, float(raw.get("confidence", 0.5))))
     except (TypeError, ValueError):
@@ -110,6 +134,7 @@ def normalize(raw: dict[str, Any]) -> dict[str, Any]:
         "door_count": _int(raw.get("door_count"), 0, 6),
         "open_shelves": _int(raw.get("open_shelves"), 0, 8),
         "dimensions": dims,
+        "estimated_dimensions": estimate,
         "confidence": confidence,
         "analysis_source": "gemini",
     }
@@ -148,26 +173,9 @@ def extract(
     return normalize(raw if isinstance(raw, dict) else {})
 
 
-# 타입별 기본 형태. 사진 분석이 없을 때(감지된 기존 가구 등)도 3D가 그럴듯하게 서도록 한다.
-TYPE_DEFAULTS: dict[str, dict[str, Any]] = {
-    "sofa": {"has_armrests": True, "back_height": "mid", "seat_count": 3, "leg_style": "wood_legs", "leg_height_ratio": 0.12},
-    "chair": {"has_armrests": False, "back_height": "high", "leg_style": "four_legs", "leg_height_ratio": 0.5},
-    "desk_chair": {"has_armrests": True, "back_height": "high", "leg_style": "casters", "leg_height_ratio": 0.45},
-    "bed": {"has_headboard": True, "leg_style": "plinth", "leg_height_ratio": 0.0},
-    "desk": {"leg_style": "four_legs", "top_shape": "rectangle", "drawer_count": 0},
-    "table": {"leg_style": "four_legs", "top_shape": "rectangle"},
-    "low_table": {"leg_style": "four_legs", "top_shape": "rectangle"},
-    "cabinet": {"leg_style": "plinth", "door_count": 2},
-    "dresser": {"leg_style": "plinth", "drawer_count": 4},
-    "wardrobe": {"leg_style": "plinth", "door_count": 2},
-    "shelf": {"leg_style": "none", "open_shelves": 4},
-    "nightstand": {"leg_style": "plinth", "drawer_count": 2},
-}
-
-
 def attributes_for(kind: str, profile: dict[str, Any] | None) -> dict[str, Any]:
-    """3D 빌더에 넘길 형태 속성. 사진 분석 값이 있으면 그걸, 없으면 타입 기본값."""
-    base = dict(TYPE_DEFAULTS.get(kind, {}))
+    """3D에 넘길 형태 속성. 사진을 본 값만 담는다(종류별 기본 형태는 두지 않는다)."""
+    base: dict[str, Any] = {}
     profile = profile or {}
     observed = profile.get("analysis_source") == "gemini"
     for key in (
@@ -189,7 +197,7 @@ def attributes_for(kind: str, profile: dict[str, Any] | None) -> dict[str, Any]:
         if value in (None, "", "mixed"):
             continue
         # 로컬 프로필(색 양자화·키워드)은 모르면 none/False/0을 채운다. 관찰한 값이 아니므로
-        # 타입 기본값을 덮어쓰지 않는다. 사진을 본 Gemini 결과만 그런 값도 믿는다
+        # 버린다. 사진을 본 Gemini 결과만 그런 값도 믿는다
         if not observed and value in ("none", False, 0):
             continue
         base[key] = value

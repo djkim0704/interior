@@ -83,16 +83,3 @@ class ArtworkParseTests(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 
-
-class RefineTypeTests(unittest.TestCase):
-    def test_name_narrows_broad_types(self) -> None:
-        from model2.scene_graph import refine_type
-
-        # 좌식 테이블을 식탁 높이로 세우면 상판이 떠 보인다
-        self.assertEqual(refine_type("table", "좌식 테이블"), "low_table")
-        self.assertEqual(refine_type("table", "식탁"), "table")
-        self.assertEqual(refine_type("unknown", "모듈 선반장"), "shelf")
-        self.assertEqual(refine_type("table", "서랍장"), "dresser")
-        self.assertEqual(refine_type("unknown", "수납장 (캐비닛)"), "cabinet")
-        # 이미 구체적인 종류는 이름으로 바꾸지 않는다
-        self.assertEqual(refine_type("sofa", "낮은 소파"), "sofa")

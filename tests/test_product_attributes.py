@@ -44,12 +44,12 @@ class NormalizeTests(unittest.TestCase):
 
 
 class AttributesForTests(unittest.TestCase):
-    def test_type_defaults_when_nothing_observed(self) -> None:
-        self.assertEqual(pa.attributes_for("sofa", {})["has_armrests"], True)
-        # 로컬 프로필의 'none'은 관찰값이 아니므로 기본값을 덮지 않는다
+    def test_nothing_observed_means_no_attributes(self) -> None:
+        # 종류별 기본 형태는 없다. 사진을 보지 않았으면 비어 있다
+        self.assertEqual(pa.attributes_for("sofa", {}), {})
+        # 로컬 프로필의 'none'은 관찰값이 아니므로 버린다
         local = {"leg_style": "none", "has_armrests": False, "analysis_source": "local"}
-        attrs = pa.attributes_for("sofa", local)
-        self.assertEqual((attrs["leg_style"], attrs["has_armrests"]), ("wood_legs", True))
+        self.assertEqual(pa.attributes_for("sofa", local), {})
         # 로컬 표기 wood → wood_legs
         self.assertEqual(pa.attributes_for("table", {"leg_style": "wood"})["leg_style"], "wood_legs")
 
@@ -97,6 +97,14 @@ class SceneIntegrationTests(unittest.TestCase):
         self.assertEqual((sofa["attrs"]["seat_count"], sofa["attrs"]["has_armrests"]), (2, False))
         self.assertEqual(sofa["dimension_source"], "title")
         self.assertTrue(sofa["is_product"])
+
+
+class EstimatedDimensionsTests(unittest.TestCase):
+    def test_estimate_is_kept_separately_from_printed_chart(self) -> None:
+        out = pa.normalize({"estimated_dimensions_cm": {"width": 120, "depth": 60, "height": 74}})
+        self.assertIsNone(out["dimensions"])
+        self.assertEqual(out["estimated_dimensions"], {"w_m": 1.2, "d_m": 0.6, "h_m": 0.74})
+        self.assertIsNone(pa.normalize({"estimated_dimensions_cm": {"width": None}})["estimated_dimensions"])
 
 
 if __name__ == "__main__":

@@ -41,17 +41,6 @@ class ParseTests(unittest.TestCase):
         self.assertIsNone(pd.parse_dimensions(""))
 
 
-class SizeClassTests(unittest.TestCase):
-    def test_bed_size_classes(self) -> None:
-        self.assertEqual(pd.size_class_dimensions("bed", "호텔식 퀸 침대 프레임")["w_m"], 1.5)
-        self.assertEqual(pd.size_class_dimensions("bed", "슈퍼싱글 저상형 침대")["w_m"], 1.1)
-        self.assertEqual(pd.size_class_dimensions("bed", "라지킹 패밀리 침대")["w_m"], 1.8)
-
-    def test_sofa_seats(self) -> None:
-        found = pd.size_class_dimensions("sofa", "북유럽 3인용 패브릭 소파")
-        self.assertEqual((found["w_m"], found["seats"]), (2.0, 3))
-
-
 class ResolveTests(unittest.TestCase):
     def test_title_wins_and_axes_are_oriented(self) -> None:
         # 침대는 폭 < 길이가 되도록 축을 맞춘다
@@ -62,13 +51,20 @@ class ResolveTests(unittest.TestCase):
         self.assertEqual((found["w_m"], found["d_m"]), (1.2, 0.6))
 
     def test_falls_back_through_sources(self) -> None:
+        # 규격표·표준 크기는 없다. 어디서도 못 찾으면 None
         product = {"type": "bed", "title": "모던 퀸 침대", "visual_profile": {}}
-        self.assertEqual(pd.resolve(product, None, fetch=False)["dimension_source"], "size_class")
-        product["visual_profile"] = {"dimensions": {"w_m": 1.6, "d_m": 2.05, "h_m": 0.9}}
+        self.assertIsNone(pd.resolve(product, None, fetch=False))
+        product["visual_profile"] = {"estimated_dimensions": {"w_m": 1.55, "d_m": 2.1, "h_m": 0.4}}
+        found = pd.resolve(product, None, fetch=False)
+        self.assertEqual((found["dimension_source"], found["measured"]), ("ai_estimate", False))
+        product["visual_profile"]["dimensions"] = {"w_m": 1.6, "d_m": 2.05, "h_m": 0.9}
         found = pd.resolve(product, None, fetch=False)
         self.assertEqual((found["dimension_source"], found["w_m"], found["h_m"]), ("image", 1.6, 0.9))
-        found = pd.resolve({"type": "lamp", "title": "무드등"}, None, fetch=False)
-        self.assertEqual((found["dimension_source"], found["measured"]), ("type_default", False))
+
+    def test_missing_height_is_filled_from_estimate(self) -> None:
+        product = {"type": "desk", "title": "책상 1200x600", "visual_profile": {"estimated_dimensions": {"w_m": 1.2, "d_m": 0.6, "h_m": 0.73}}}
+        found = pd.resolve(product, None, fetch=False)
+        self.assertEqual((found["dimension_source"], found["h_m"]), ("title", 0.73))
 
     def test_page_is_used_when_title_has_no_size(self) -> None:
         page = '<html><head><meta name="description" content="편안한 2인 소파. 사이즈 1600 x 850 x 800 mm"></head></html>'

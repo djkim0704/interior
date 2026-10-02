@@ -6,8 +6,9 @@ dimension_source로 남긴다. 3D·배치에 쓰인 크기가 실측인지 추�
   1) title / snippet      제목·요약의 "1200x600x750", "W120 D60 H75cm" 같은 표기
   2) page                 상품 페이지(JSON-LD, 메타 설명, 본문 텍스트)
   3) image                Gemini가 상품 사진 속 치수표에서 읽은 값(product_attributes)
-  4) size_class           "퀸 침대", "3인 소파" 같은 규격 표현
-  5) type_default         타입별 표준 크기
+  4) ai_estimate          Gemini가 상품 사진·제목으로 추정한 크기(product_attributes)
+
+어디서도 못 찾으면 None이다. 종류별 표준 크기나 규격표로 지어내지 않는다.
 
 치수 축 규약은 Scene Graph와 같다. w = 뒷면(헤드보드·등받이)과 나란한 폭,
 d = 앞뒤 깊이(침대는 길이), h = 높이. 단위는 미터.
@@ -42,18 +43,6 @@ LABELED = {
     axis: re.compile(r"(?<![A-Za-z])" + label + r"\s*[:：=]?\s*" + _NUM + _UNIT, re.I)
     for axis, label in LABELS.items()
 }
-
-# 국내 침대 규격(폭, 길이 m)
-BED_CLASSES = [
-    (re.compile(r"라지\s*킹|LK\b", re.I), (1.8, 2.0)),
-    (re.compile(r"(?<!라지)\s*킹(?!사이즈\s*싱글)|(?<![A-Z])K(?:사이즈)?\b"), (1.6, 2.0)),
-    (re.compile(r"퀸|(?<![A-Z])Q(?:사이즈)?\b"), (1.5, 2.0)),
-    (re.compile(r"더블|(?<![A-Z])D(?:사이즈)?\b"), (1.4, 2.0)),
-    (re.compile(r"슈퍼\s*싱글|SS\b", re.I), (1.1, 2.0)),
-    (re.compile(r"싱글|(?<![A-Z])S(?:사이즈)?\b"), (1.0, 2.0)),
-]
-SOFA_SEATS = {1: 0.9, 2: 1.5, 3: 2.0, 4: 2.6, 5: 3.0}
-
 
 def _to_float(raw: str) -> float:
     return float(raw.replace(",", "."))
@@ -125,21 +114,6 @@ def parse_dimensions(text: str) -> dict[str, Any] | None:
             "raw": match.group(0),
             "pattern": "triple",
         }
-    return None
-
-
-def size_class_dimensions(kind: str, text: str) -> dict[str, Any] | None:
-    """규격 표현(퀸, 3인용)으로 크기를 정한다. 실측이 없을 때의 차선책."""
-    text = str(text or "")
-    if kind == "bed":
-        for pattern, (w, d) in BED_CLASSES:
-            if pattern.search(text):
-                return {"w_m": w, "d_m": d, "h_m": None, "raw": pattern.pattern, "pattern": "bed_class"}
-    if kind == "sofa":
-        match = re.search(r"([1-5])\s*인", text)
-        if match:
-            seats = int(match.group(1))
-            return {"w_m": SOFA_SEATS[seats], "d_m": 0.9, "h_m": None, "raw": match.group(0), "pattern": "seat_class", "seats": seats}
     return None
 
 
@@ -244,7 +218,7 @@ def fetch_page(url: str, cache_dir: Path) -> str | None:
 # ---------------------------------------------------------------- 종합
 
 def resolve(product: dict[str, Any], cache_dir: str | Path | None = None, *, fetch: bool = True) -> dict[str, Any]:
-    """상품 하나의 치수를 정한다. 항상 값을 돌려주고 dimension_source로 근거를 밝힌다."""
+    """상품 하나의 치수를 찾는다. 근거는 dimension_source, 못 찾으면 None."""
     kind = scene_graph.object_type(product.get("type"))
     title = str(product.get("title") or "")
     snippet = " ".join(str(product.get(k) or "") for k in ("snippet", "category1", "extensions"))
@@ -263,22 +237,23 @@ def resolve(product: dict[str, Any], cache_dir: str | Path | None = None, *, fet
         image_dims = ((product.get("visual_profile") or {}).get("dimensions") or {})
         if image_dims.get("w_m") and image_dims.get("d_m"):
             found = ("image", {**image_dims, "pattern": "image_table"})
+    estimate = (product.get("visual_profile") or {}).get("estimated_dimensions") or {}
+    if found is None and estimate.get("w_m") and estimate.get("d_m"):
+        found = ("ai_estimate", {**estimate, "pattern": "ai_estimate"})
     if found is None:
-        dims = size_class_dimensions(kind, title)
-        if dims:
-            found = ("size_class", dims)
-    if found is None:
-        w, d = scene_graph.DEFAULT_SIZES.get(kind, scene_graph.DEFAULT_SIZES["unknown"])
-        found = ("type_default", {"w_m": w, "d_m": d, "h_m": None, "pattern": "default"})
+        return None
 
     source, dims = found
+    # 치수 표기에 높이가 없으면(가로×세로만) Gemini 추정 높이로 채운다
+    if not dims.get("h_m") and estimate.get("h_m"):
+        dims = {**dims, "h_m": estimate["h_m"]}
     dims = orient(kind, dims)
     return {
         "w_m": round(float(dims["w_m"]), 3),
         "d_m": round(float(dims["d_m"]), 3),
         "h_m": round(float(dims["h_m"]), 3) if dims.get("h_m") else None,
         "dimension_source": source,
-        # 실측(제목·설명·페이지·사진 속 치수표)인지, 규격·기본값으로 정한 추정인지
+        # 실측(제목·설명·페이지·사진 속 치수표)인지, AI가 사진으로 추정한 값인지
         "measured": source in {"title", "snippet", "page", "image"},
         "raw": dims.get("raw"),
     }

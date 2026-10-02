@@ -159,7 +159,7 @@ class IntegrationTests(unittest.TestCase):
         bed_before = (graph["objects"][0]["cx"], graph["objects"][0]["cy"])
         # 기존 라우트처럼 legacy 필드만 채운 상품을 침대 위 고정 슬롯에 끼운다
         graph["objects"].append(
-            {"type": "shelf", "label": "선반", "x": 0.24, "y": 0.24, "w": 0.0, "h": 0.0,
+            {"type": "shelf", "label": "선반", "x": 0.24, "y": 0.24, "w": 0.0, "h": 0.0, "w_m": 0.8, "d_m": 0.3,
              "wall": "none", "source": "selected_product", "product_marker": 1}
         )
         fixed = scene_graph.ensure(graph)

@@ -323,6 +323,8 @@ def enrich_products_with_visual_profiles(
                     attributes_failed.write_text(str(exc)[:300], encoding="utf-8")
             if attributes and attributes.get("dimensions"):
                 product["visual_profile"]["dimensions"] = attributes["dimensions"]
+            if attributes and attributes.get("estimated_dimensions"):
+                product["visual_profile"]["estimated_dimensions"] = attributes["estimated_dimensions"]
             stored_image = cache_root / "product_images_v1" / f"{cache_key}.jpg"
             if stored_image.is_file():
                 product["image_file"] = stored_image.name
@@ -338,7 +340,7 @@ def enrich_products_with_visual_profiles(
                 f"상품 이미지 분석 실패: {exc}"
             )
 
-    # 실제 가로·세로·높이(항목 6). 이미지 분석이 실패해도 제목·페이지·규격으로 정한다
+    # 실제 가로·세로·높이(항목 6). 제목·페이지·치수표·AI 추정 순. 못 찾으면 None
     for product in products:
         try:
             product["dimensions"] = product_dimensions.resolve(product, cache_root)

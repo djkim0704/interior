@@ -163,7 +163,14 @@
     doorAdd.addEventListener("click", () => {
       const wall = document.getElementById("reviewDoorWall").value;
       const offset = Number(document.getElementById("reviewDoorOffset").value) / 100;
-      send([{ op: "add", type: "door", wall, offset }], "문을 추가하고 문 앞 통로를 비워 다시 배치했어요.");
+      // 문 폭은 사용자가 넣는다(표준 폭을 가정하지 않는다)
+      const widthCm = Number(document.getElementById("reviewDoorWidth").value);
+      if (!(widthCm >= 40 && widthCm <= 300)) {
+        const status = document.getElementById("reviewStatus");
+        if (status) status.textContent = "문 폭을 cm로 입력해 주세요(40~300).";
+        return;
+      }
+      send([{ op: "add", type: "door", wall, offset, w_m: widthCm / 100 }], "문을 추가하고 문 앞 통로를 비워 다시 배치했어요.");
     });
   }
 

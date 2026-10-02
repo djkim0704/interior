@@ -4234,22 +4234,25 @@ def search_products():
                     print(f"[search-products] 적합도 계산 실패: {fit_exc}")
                     continue
                 mood = mood_scores.get(id(product))
+                # 치수를 몰라 공간·크기를 못 잰 상품은 0점으로 둔다(뒤로 밀린다)
+                space = fit["space"] or 0.0
+                size = fit["size"] or 0.0
                 if mood is None:
                     total = (
-                        spatial_fit.WEIGHTS["space"] * fit["space"]
-                        + spatial_fit.WEIGHTS["size"] * fit["size"]
+                        spatial_fit.WEIGHTS["space"] * space
+                        + spatial_fit.WEIGHTS["size"] * size
                     ) / (spatial_fit.WEIGHTS["space"] + spatial_fit.WEIGHTS["size"])
                 else:
                     total = (
                         spatial_fit.WEIGHTS["mood"] * mood
-                        + spatial_fit.WEIGHTS["space"] * fit["space"]
-                        + spatial_fit.WEIGHTS["size"] * fit["size"]
+                        + spatial_fit.WEIGHTS["space"] * space
+                        + spatial_fit.WEIGHTS["size"] * size
                     )
                 product["fit"] = {
                     "mood": mood,
                     "space": fit["space"],
                     "size": fit["size"],
-                    "total": round(total * (1 if fit["fits"] else 0.4), 3),
+                    "total": round(total * (0.4 if fit["fits"] is False else 1), 3),
                     "fits": fit["fits"],
                     "reasons": fit["reasons"][:3],
                     "dimensions": fit["dimensions"],
@@ -4457,8 +4460,26 @@ def add_product():
     except Exception as enrich_exc:
         print(
             "[add-product] "
-            f"상품 분석 실패, 기본 형태로 진행: {enrich_exc}"
+            f"상품 분석 실패: {enrich_exc}"
         )
+
+    # 크기를 모르는 상품은 지어낸 크기로 놓지 않는다. 같은 종류를 교체하는 경우만
+    # 원래 가구 크기를 물려받아 놓을 수 있다
+    replacing = any(
+        choice.get("decision") == "replace"
+        and choice.get("type") == item_type
+        for choice in session.get("furniture_choices") or []
+    )
+    if not product_has_real_size(selected_products[-1]) and not replacing:
+        return jsonify(
+            {
+                "ok": False,
+                "error": (
+                    "이 상품의 치수를 찾지 못해 평면도에 놓을 수 없습니다. "
+                    "치수가 표기된 다른 상품을 골라 주세요."
+                ),
+            }
+        ), 400
 
     selected_filename = (
         save_json_cache(
@@ -4628,19 +4649,15 @@ def result():
 # STEP 6: 3D 배치 확인
 # ──────────────────────────────────────────────────────
 def product_has_real_size(product):
-    """상품 크기를 믿을 만한가. 실측이거나 규격(퀸, 3인용)으로 정한 경우."""
+    """상품 크기를 아는가. 실측이든 AI 추정이든 그 상품의 값이면 쓴다(표준 크기는 없다)."""
     dims = product.get("dimensions") or {}
-    return bool(
-        dims.get("measured")
-        or dims.get("dimension_source") == "size_class"
-    )
+    return bool(dims.get("w_m") and dims.get("d_m"))
 
 
 def product_geometry(product, replacement_object=None):
     """수정 평면도에 넣을 상품의 미터 크기·높이·형태 속성.
 
-    교체일 때 상품 크기를 모르면(타입 기본값뿐이면) 원래 가구 크기를 유지한다.
-    방에 맞게 놓여 있던 크기가 표준값보다 실제에 가깝기 때문이다.
+    교체일 때 상품 크기를 모르면 원래 가구 크기를 유지한다.
     """
     dims = product.get("dimensions") or {}
     geometry = {

@@ -19,8 +19,7 @@
     snippet: "상품 설명",
     page: "상품 페이지",
     image: "상품 사진 치수표",
-    size_class: "규격",
-    type_default: "표준 크기(추정)",
+    ai_estimate: "AI 추정(상품 사진)",
   };
 
   // 교체로 표시한 같은 종류의 기존 가구
@@ -56,9 +55,12 @@
     const size = dims.w_m
       ? `${Math.round(dims.w_m * 100)}×${Math.round(dims.d_m * 100)}${dims.h_m ? "×" + Math.round(dims.h_m * 100) : ""}cm · ${DIMENSION_SOURCES[dims.dimension_source] || ""}`
       : "";
+    // 치수를 모르는 상품은 공간을 재지 않았다(표준 크기로 지어내지 않는다)
     const badge = fit.fits === false
       ? '<span class="badge text-bg-danger">공간 부족</span>'
-      : `<span class="badge" style="background:#5b4a3c;">적합도 ${pct(fit.total)}%</span>`;
+      : fit.fits === null
+        ? '<span class="badge text-bg-secondary">치수 정보 없음</span>'
+        : `<span class="badge" style="background:#5b4a3c;">적합도 ${pct(fit.total)}%</span>`;
     return `
       <div class="mt-1 mb-2">
         <div class="mb-1">${badge}</div>

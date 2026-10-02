@@ -74,11 +74,17 @@ def make_scorer(
 
     def score(product: dict[str, Any]) -> dict[str, Any]:
         dims = product_dimensions.resolve({**product, "type": kind}, None, fetch=False)
+        if dims is None:
+            # 표준 크기로 지어내 재지 않는다. 무드 점수로만 순위를 정한다
+            return {
+                "space": None,
+                "size": None,
+                "fits": None,
+                "dimensions": None,
+                "reasons": ["치수 정보가 없어 공간 적합도를 재지 못했어요"],
+            }
         w, d = float(dims["w_m"]), float(dims["d_m"])
         reasons: list[str] = []
-        known_size = dims["dimension_source"] != "type_default"
-        if not known_size:
-            reasons.append("크기 정보가 없어 표준 크기로 계산했어요")
 
         # 방보다 크면 놓아 볼 필요도 없다
         if min(w, d) > min(W, D) or max(w, d) > max(W, D):
@@ -149,8 +155,6 @@ def make_scorer(
             size = _size_score_share(kind, area, room_area)
             if size < 0.5:
                 reasons.append("방 크기에 비해 크거나 작아요")
-        if not known_size:
-            size = min(size, 0.5)
         return {
             "space": round(max(0.0, space), 3),
             "size": round(size, 3),
@@ -165,7 +169,7 @@ def make_scorer(
 
 def combine(mood: float, fit: dict[str, Any]) -> float:
     """무드·공간·크기 적합도를 하나로. 들어가지 않는 상품은 무드가 좋아도 뒤로 민다."""
-    total = WEIGHTS["mood"] * mood + WEIGHTS["space"] * fit["space"] + WEIGHTS["size"] * fit["size"]
-    if not fit.get("fits", True):
+    total = WEIGHTS["mood"] * mood + WEIGHTS["space"] * (fit["space"] or 0.0) + WEIGHTS["size"] * (fit["size"] or 0.0)
+    if fit.get("fits") is False:
         total *= 0.4
     return round(total, 4)

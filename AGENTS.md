@@ -323,63 +323,39 @@ venv\Scripts\python.exe -m py_compile backend/app.py   # 저장 직후 확인
 한다. 원래 코드는 그 아래에 그대로 살아 있고, 각 함수 맨 위의 `return` 두
 줄만 지우면 복구된다. `backend/app.py`에서 `[임시]` 주석으로 표시해 뒀다.
 
-### 7.9 three.js 가구 형태는 Gemini 설계도로 덮인다
+### 7.9 3D 가구는 2D SVG를 밀어 올려 세운다 (하드코딩 치수 없음)
 
-> **현재 구조(4단계 이후):** three.js는 **배치만** 맡고, 가구 모양은 가구마다
-> Gemini가 만든다(`gemini_furniture_parts.generate_object_parts`, `POST /api/scene/parts`).
-> 상품은 상품 사진, 기존 가구는 방 사진에서 `photo_box`로 잘라 낸 부분을 함께 보낸다.
-> 3D 화면은 먼저 배치를 그리고, 모양이 오면 같은 배치로 다시 세운다. 캐시는 가구
-> 정체성 단위(위치 무관)라 편집 뒤에는 새로 들어온 가구만 묻는다. 부품은 색·재질을
-> 가질 수 있다. 모양을 못 받은 가구는 `PARAMETRIC` 빌더(상품 형태 속성 반영)로 그린다.
-> 아래 타입 단위 설계도(`generate_furniture_parts`)는 이전 방식으로 남아 있다.
->
-> **기본 표시는 2D 그림 돌출이다**(`model2/art_solid.py`, `floorplan_3d.js`의 `buildSolid`).
-> 2D 평면도의 위에서 본 가구 SVG를 three.js `SVGLoader`로 읽어 도형마다 위로 밀어 올린다.
-> 같은 SVG라 2D와 모양·색이 같고, 3D를 위한 API 호출이 없다.
-> - 도형별 높이는 2D 그림을 그릴 때 Gemini가 함께 적는다(`ARTWORK_PROMPT`, `ARTWORK_VERSION` 2).
->   `data-z0`·`data-z1`(가구 높이 대비 비율), `data-soft`(모서리 둥글기), `data-taper`(위로 좁아짐),
->   `data-only3d`(위에서 안 보이는 다리 등, 2D에서는 뺀다), `data-3d="skip"`(그림자·빛 효과).
-> - 높이 정보가 없는 예전 그림과 상품의 기본 모양은 화면이 규칙으로 정한다: 가장 큰 도형이 몸체,
->   뒤 도형은 그 위에 얹고, 책상·의자류는 상판과 다리로 세운다.
-> - SVGLoader는 `url(#…)` 칠을 못 읽어 서버가 그라데이션을 대표색으로 바꿔 넘긴다. 맞춤 범위(`box`)는
->   2D 렌더러와 같은 값이라 2D·3D 외곽이 같다.
-> - 문·창문은 3D에 세우지 않는다.
->
-> 이미지 입체 그림(`model2/gemini_furniture_views.py`, `POST /api/scene/views`)은 예전 방식으로 남아
-> 있고 기본으로 꺼져 있다(`GEMINI_FURNITURE_VIEWS=0`). 켜면 가구당 이미지 4장을 그려 판으로 세운다.
+**치수·높이는 모두 데이터에서 온다.** 종류별 고정 높이표(`TYPE_PRESETS`), 표준 크기표
+(`DEFAULT_SIZES`), 형태 기본값(`TYPE_DEFAULTS`), 침대·소파 규격표, three.js의 손으로 짠
+모양(`BUILDERS`·`PARAMETRIC`)은 지웠다. 표를 다시 만들지 말 것.
 
-three.js 의 가구 모양은 원래 `floorplan_3d.js` 의 `BUILDERS` 에 손으로 짜
-넣은 상자 조합이다(27종). 종류가 늘수록 품질 편차가 커서, Gemini 에게 형태를
-**부품 목록으로** 받아 덮어쓰는 경로를 뒀다(`gemini_furniture_parts.py`).
+- **기존 가구 높이:** 공간 분석이 사진에서 추정한다(`ANALYSIS_PROMPT`의 `height_m`,
+  `elevation_m`, `room.ceiling_height_m`). 빠진 가구는 같은 방 가구의 '높이 ÷ 긴 변' 비율로
+  채운다(`scene_graph.fill_missing_heights`, `h_source`에 근거). 천장은 분석값, 없으면 가장
+  높이 닿는 객체(`ceiling_from_objects`).
+- **상품 치수:** 제목 → 설명 → 상품 페이지 → 사진 속 치수표 → Gemini 추정
+  (`product_attributes`의 `estimated_dimensions_cm`, `dimension_source="ai_estimate"`). 모두
+  없으면 `resolve()`가 None이고, 상품 추가는 400으로 막는다(교체는 원래 가구 크기를 물려받음).
+  추천 목록에서 치수를 모르는 상품은 공간·크기 점수를 재지 않는다("치수 정보 없음").
+- **문 추가:** 폭을 사용자가 입력한다(`w_m` 필수).
+- **예전 형식(rule_based_v3) 배치**는 높이 정보가 없어 3D로 세우지 않는다(`placement: "unsupported"`).
 
-이 타입 단위 설계도는
-그림이 아니라 좌표 JSON 만 받는다. 가벼운 작업이라 무료 등급 모델로도
-생성되고, 재질·조명·원근은 three.js 가 GPU 로 처리한다.
+**모양은 2D 그림 돌출이다**(`model2/art_solid.py`, `floorplan_3d.js`의 `buildSolid`).
+2D 평면도의 위에서 본 가구 SVG를 three.js `SVGLoader`로 읽어 도형마다 위로 밀어 올린다.
+같은 SVG라 2D와 모양·색이 같고, 3D를 위한 API 호출이 없다.
+- 도형별 높이는 2D 그림을 그릴 때 Gemini가 함께 적는다(`ARTWORK_PROMPT`, `ARTWORK_VERSION` 2).
+  `data-z0`·`data-z1`(가구 높이 대비 비율), `data-soft`(모서리 둥글기), `data-taper`(위로 좁아짐),
+  `data-only3d`(위에서 안 보이는 다리 등, 2D에서는 뺀다), `data-3d="skip"`(그림자·빛 효과).
+  높이 구간이 있는 선(`<line>`)은 막대(다리·기둥)로 세운다.
+- 높이 정보가 없는 SVG(상품의 2D 기본 모양 등)는 가장 큰 도형을 몸체로 가구 높이까지 세우고,
+  나머지는 윗면 무늬로 붙인다.
+- SVGLoader는 `url(#…)` 칠을 못 읽어 서버가 그라데이션을 대표색으로 바꿔 넘긴다. 맞춤 범위(`box`)는
+  2D 렌더러와 같은 값이라 2D·3D 외곽이 같다.
+- 세울 SVG가 없는 가구는 바닥 자리 표시만 보인다. 문·창문은 3D에 세우지 않는다.
 
-```
-배치 JSON → Gemini: 종류별 부품 목록 → three.js: buildFromParts()
-                                        없으면 BUILDERS 로 폴백
-```
-
-주의할 점이 셋 있다.
-
-**설계도는 전제 조건이 아니다.** 생성이 실패하면 예외를 올리지 않고 빈
-dict 를 반환한다. three.js 는 그대로 기존 `BUILDERS` 로 그린다. 그래서
-실패해도 화면이 나빠지지 않고, 안내 문구도 뜨지 않는다. 대신 조용히 넘어가므로
-서버 콘솔의 `[gemini-furniture-parts] 생성 실패:` 줄을 봐야 원인을 알 수 있다.
-
-**좌표는 미터가 아니라 비율이다.** 가구 자체 치수에 대한 0~1 값이라 방 크기나
-배치가 달라져도 같은 설계도를 재사용한다. 그래서 캐시 키에 배치가 들어가지
-않고, 배치를 바꿔가며 여러 번 들어와도 호출이 늘지 않는다. 규약(원점, y 는
-밑면 기준, 뒷면이 -z)은 `gemini_furniture_parts.py` 의 docstring 에 있고
-`floorplan_3d.js` 의 `box()`/`cylinder()` 와 맞춰야 한다.
-
-**부품이 빈 항목은 버려야 한다.** `{"parts": []}` 를 그대로 넘기면 three.js 가
-"설계도가 있다"고 믿고 `BUILDERS` 를 건너뛰어 **가구가 통째로 사라진다.**
-`_coerce()` 에서 걸러내고 있으니 그 검증을 약화시키지 말 것.
-
-모델은 `GEMINI_FURNITURE_PARTS_MODEL` 로 따로 지정한다. 비우면
-`GEMINI_ANALYSIS_MODEL` 을 따른다.
+Gemini 부품 목록(`gemini_furniture_parts`, `GEMINI_OBJECT_PARTS`)과 이미지 입체 그림
+(`gemini_furniture_views`, `GEMINI_FURNITURE_VIEWS`)은 예전 방식으로 남아 있고 기본으로 꺼져 있다.
+모델은 `GEMINI_FURNITURE_PARTS_MODEL`로 따로 지정한다.
 
 ---
 

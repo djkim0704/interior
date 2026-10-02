@@ -140,13 +140,8 @@ def cache_key(image_path: Path, graph: dict[str, Any], model: str) -> str:
 
 
 def _height_m(obj: dict[str, Any]) -> float:
-    """3D에서 쓰는 높이와 같은 값(floorplan_3d.TYPE_PRESETS)을 알려 준다."""
-    from .floorplan_3d import FALLBACK_PRESET, TYPE_PRESETS
-    from .scene_graph import refine_type
-
-    kind = refine_type(str(obj.get("type") or "").lower(), obj.get("label"))
-    preset = TYPE_PRESETS.get(kind, FALLBACK_PRESET)
-    return float(obj.get("h_m") or preset["height_m"])
+    """3D에서 쓰는 높이와 같은 값(공간 분석이 사진에서 추정한 h_m)을 알려 준다."""
+    return float(obj.get("h_m") or 0.0)
 
 
 def _prompt(graph: dict[str, Any]) -> str:
