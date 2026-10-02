@@ -2400,7 +2400,8 @@ def floorplan_review_data(graph):
 
 
 def object_parts_enabled():
-    return os.getenv("GEMINI_OBJECT_PARTS", "1").strip().lower() not in {"0", "false", "no", "off"}
+    # 기본은 끈다. 3D는 2D 평면도 SVG를 밀어 올려 세우므로(art_solid) 부품 모형 호출이 필요 없다
+    return os.getenv("GEMINI_OBJECT_PARTS", "0").strip().lower() not in {"0", "false", "no", "off"}
 
 
 @app.post("/api/scene/parts")
