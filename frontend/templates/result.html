@@ -152,6 +152,7 @@
         <button type="button" class="btn btn-outline-secondary" data-view-preset="eye">눈높이</button>
         <button type="button" class="btn btn-outline-dark d-none" id="floorplan3dArt">입체 모형으로 보기</button>
         <button type="button" class="btn btn-outline-dark d-none" id="floorplan3dEdit">가구 옮기기</button>
+        <button type="button" class="btn btn-outline-danger d-none" id="floorplan3dRemove" disabled title="고른 상품을 결과에서 뺍니다">지우기</button>
         <button type="button" class="btn btn-outline-dark d-none" id="floorplan3dRotate" disabled title="고른 가구를 90° 돌립니다 (R 키)">↻ 회전</button>
         <button type="button" class="btn btn-outline-secondary active" id="floorplan3dGrid">격자 숨기기</button>
         <button type="button" class="btn btn-outline-secondary active" id="floorplan3dLabels">이름 숨기기</button>
@@ -374,6 +375,17 @@
                 }}
               </p>
 
+              {% if not readonly %}
+              {# 추가한 상품을 결과에서 뺀다. 평면도와 3D가 함께 다시 그려진다 #}
+              <button
+                type="button"
+                class="btn btn-sm btn-outline-danger remove-product-btn mb-2"
+                data-marker="{{ product.marker }}"
+              >
+                삭제
+              </button>
+              {% endif %}
+
               {% if product.link %}
                 <a
                   href="{{ product.link }}"
@@ -521,7 +533,7 @@
   src="{{ url_for(
     'static',
     filename='js/result_toggle.js',
-    v='20261002-room-style'
+    v='20261003-remove'
   ) }}"
 ></script>
 
@@ -529,7 +541,7 @@
   src="{{ url_for(
     'static',
     filename='js/result_products.js',
-    v='20261002-room-style'
+    v='20261003-remove'
   ) }}"
 ></script>
 {% if scene_3d %}
@@ -544,6 +556,6 @@
     }
   }
 </script>
-<script type="module" src="{{ url_for('static', filename='js/floorplan_3d.js', v='20261002-room-style') }}"></script>
+<script type="module" src="{{ url_for('static', filename='js/floorplan_3d.js', v='20261003-remove') }}"></script>
 {% endif %}
 {% endblock %}

@@ -103,9 +103,12 @@ class GenerateViewsTests(unittest.TestCase):
         self.assertEqual((len(out["views"]), out["remaining"]), (3, 0))
 
     def test_one_failure_does_not_stop_others(self) -> None:
-        client = _Client(fail_on=2)  # 첫 가구의 두 번째 그림에서 실패
+        client = _Client(fail_on=2)  # 첫 가구의 옆·뒤 그림 중 하나에서 실패
         out = gfv.generate_object_views(_scene(2), self.cache, room_photo=self.photo, client=client, model="img")
-        self.assertEqual(list(out["views"]), ["sofa_1"])
+        # 두 번째 가구는 네 방향 모두, 첫 가구는 그린 만큼(앞 그림 포함) 바로 보여 준다
+        self.assertTrue(out["views"]["sofa_1"]["complete"])
+        self.assertFalse(out["views"]["sofa_0"]["complete"])
+        self.assertIn("front", out["views"]["sofa_0"]["views"])
 
     def test_single_view_mode(self) -> None:
         import os
@@ -179,6 +182,18 @@ class GenerateViewsTests(unittest.TestCase):
         self.assertIn('id="gx-quilt"', svg)
         self.assertIn('id="gx-wood"', svg)  # 무늬가 쓰는 그라데이션까지 따라간다
         self.assertNotIn("gx-other", svg)
+
+
+    def test_partial_views_shown_then_completed(self) -> None:
+        client = _Client()
+        gfv.generate_object_views(_scene(), self.cache, room_photo=self.photo, client=client, model="img")
+        # 앞 그림만 남은 상태(예전에 도중에 멈춘 가구)를 흉내 낸다
+        for name in ("right", "back", "left"):
+            next(self.cache.glob(f"gemini_furniture_views_v1/*_{name}.png")).unlink()
+        calls_before = len(client.models.calls)
+        out = gfv.generate_object_views(_scene(), self.cache, room_photo=self.photo, client=client, model="img")
+        self.assertTrue(out["views"]["sofa_0"]["complete"])
+        self.assertEqual(len(client.models.calls) - calls_before, 3)  # 빠진 세 방향만 다시 그린다
 
 
 if __name__ == "__main__":

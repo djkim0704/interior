@@ -1458,6 +1458,7 @@ function init() {
   const editContext = host.dataset.editContext || "floorplan";
   const editButton = document.getElementById("floorplan3dEdit");
   const rotateButton = document.getElementById("floorplan3dRotate");
+  const removeButton = document.getElementById("floorplan3dRemove");
   let editing3d = false;
   let busy = false;
 
@@ -1507,6 +1508,8 @@ function init() {
     viewer.onEdit = sendEdit;
     viewer.onSelect = (obj) => {
       if (rotateButton) rotateButton.disabled = !obj || !editing3d;
+      // 지우기는 결과에 추가한 상품만 한다(기존 가구는 유지·제거 버튼으로 다룬다)
+      if (removeButton) removeButton.disabled = !obj || !editing3d || !obj.is_product;
       if (obj && status && editing3d) status.textContent = `${obj.label} 선택됨 — 끌어서 옮기거나 ↻(R 키)로 돌리세요.`;
     };
     viewer.setEditable(editing3d);
@@ -1519,6 +1522,7 @@ function init() {
       editButton.classList.toggle("active", editing3d);
       editButton.textContent = editing3d ? "옮기기 끝" : "가구 옮기기";
       if (rotateButton) rotateButton.classList.toggle("d-none", !editing3d);
+      if (removeButton) removeButton.classList.toggle("d-none", !editing3d);
       attachEditing();
       if (status) {
         status.textContent = editing3d
@@ -1529,6 +1533,20 @@ function init() {
   }
   if (rotateButton) {
     rotateButton.addEventListener("click", () => viewer && viewer.rotateSelected(90));
+  }
+  if (removeButton) {
+    removeButton.addEventListener("click", () => {
+      if (!viewer || !viewer.selected) return;
+      const obj = viewer.selected.userData.object;
+      if (!obj.is_product) return;
+      sendEdit({ op: "remove", id: obj.id });
+      // 아래 "선택한 추천 가구" 목록의 카드도 지운다
+      const marker = String(obj.id).split("_").pop();
+      document.querySelectorAll(`.remove-product-btn[data-marker="${marker}"]`).forEach((el) => {
+        const card = el.closest("[class*='col-']");
+        if (card) card.remove();
+      });
+    });
   }
   window.addEventListener("keydown", (event) => {
     if (!editing3d || !viewer || (event.target.closest && event.target.closest("input, textarea, select"))) return;
@@ -1574,7 +1592,10 @@ function init() {
   async function loadViews() {
     if (!viewsUrl || viewsBusy || !data) return;
     const have = data.object_views || {};
-    const missing = (data.objects || []).filter((o) => !have[o.id] && !o.wall_mounted);
+    // 그림이 없거나 아직 네 방향이 다 안 그려진 가구가 있으면 요청한다
+    const missing = (data.objects || []).filter(
+      (o) => !o.wall_mounted && (!have[o.id] || have[o.id].complete === false)
+    );
     if (!missing.length) return;
     viewsBusy = true;
     try {
@@ -1586,7 +1607,9 @@ function init() {
       });
       const result = await response.json();
       const fresh = (result && result.views) || {};
-      const added = Object.keys(fresh).filter((id) => !have[id]);
+      // 새 가구뿐 아니라 방향이 늘어난 가구도 반영한다(앞 그림 먼저, 나머지는 나중에)
+      const count = (entry) => Object.keys((entry && entry.views) || {}).length;
+      const added = Object.keys(fresh).filter((id) => !have[id] || count(fresh[id]) > count(have[id]));
       if (added.length) {
         data = { ...data, object_views: { ...have, ...fresh } };
         window.dispatchEvent(new CustomEvent("floorplan:scene-updated", { detail: data }));

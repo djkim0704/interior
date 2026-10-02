@@ -84,6 +84,7 @@
       </button>
       <button type="button" class="btn btn-outline-dark d-none" id="floorplan3dArt">입체 모형으로 보기</button>
       <button type="button" class="btn btn-outline-dark d-none" id="floorplan3dEdit">가구 옮기기</button>
+      <button type="button" class="btn btn-outline-danger d-none" id="floorplan3dRemove" disabled title="고른 상품을 결과에서 뺍니다">지우기</button>
       <button type="button" class="btn btn-outline-dark d-none" id="floorplan3dRotate" disabled title="고른 가구를 90° 돌립니다 (R 키)">↻ 회전</button>
       <button type="button" class="btn btn-outline-secondary active" id="floorplan3dGrid">격자 숨기기</button>
       <button type="button" class="btn btn-outline-secondary active" id="floorplan3dLabels">
@@ -175,7 +176,7 @@
   </script>
   <script
     type="module"
-    src="{{ url_for('static', filename='js/floorplan_3d.js', v='20261002-room-style') }}"
+    src="{{ url_for('static', filename='js/floorplan_3d.js', v='20261003-remove') }}"
   ></script>
 {% endif %}
 {% endblock %}

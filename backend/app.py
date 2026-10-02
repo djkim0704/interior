@@ -2286,10 +2286,20 @@ def edit_scene():
     if any(str(op.get("id")) not in product_ids for op in product_ops):
         return jsonify({"ok": False, "error": "해당 가구를 찾을 수 없습니다."}), 400
     overrides = dict(session.get("product_overrides") or {})
+    for op in [op for op in product_ops if op.get("op") == "remove"]:
+        # 상품 지우기는 선택 목록에서 빼는 것이다(수정 평면도는 아래에서 다시 만든다)
+        try:
+            marker = int(str(op.get("id")).rsplit("_", 1)[-1])
+        except ValueError:
+            return jsonify({"ok": False, "error": "잘못된 상품입니다."}), 400
+        _, error = remove_selected_product(marker)
+        if error:
+            return jsonify({"ok": False, "error": error}), 400
+    product_ops = [op for op in product_ops if op.get("op") != "remove"]
     for op in product_ops:
         # 상품은 수정 평면도에만 있다. 위치·방향만 따로 기억했다가 다시 만들 때 적용한다
         if op.get("op") not in {"move", "rotate"}:
-            return jsonify({"ok": False, "error": "선택한 상품은 이동과 회전만 할 수 있습니다."}), 400
+            return jsonify({"ok": False, "error": "선택한 상품은 이동·회전·지우기만 할 수 있습니다."}), 400
         entry = dict(overrides.get(str(op.get("id"))) or {})
         try:
             if op["op"] == "move":
@@ -4276,6 +4286,61 @@ def search_products():
     )
 
 
+def remove_selected_product(marker):
+    """선택한 상품 하나를 빼고 수정 평면도를 다시 만든다. 성공하면 새 SVG 파일명.
+
+    결과 화면의 삭제 버튼, 3D 편집의 '지우기'가 함께 쓴다.
+    """
+    selected_products = load_session_json_cache(
+        "selected_products_file",
+        default=[],
+    ) or []
+    remaining = [
+        item for item in selected_products
+        if int(item.get("marker") or 0) != int(marker)
+    ]
+    if len(remaining) == len(selected_products):
+        return None, "해당 상품을 찾을 수 없습니다."
+    remove_cache_file(session.pop("selected_products_file", None))
+    session["selected_products_file"] = save_json_cache(
+        "selected_products",
+        remaining,
+    )
+    # 3D에서 옮겨 둔 위치 기록도 함께 지운다. 같은 번호의 새 상품에 남으면 엉뚱한 자리에 놓인다
+    overrides = dict(session.get("product_overrides") or {})
+    overrides.pop(f"product_{int(marker)}", None)
+    session["product_overrides"] = overrides
+    svg_filename = create_modified_floorplan(
+        session.get("furniture_choices") or [],
+        remaining,
+    )
+    if not svg_filename:
+        return None, "수정 평면도 생성 실패"
+    session["modified_floorplan_file"] = svg_filename
+    return svg_filename, None
+
+
+@app.post("/remove-product")
+def remove_product():
+    """선택한 상품을 결과에서 뺀다. 평면도와 3D를 함께 다시 만들어 돌려준다."""
+    payload = request.get_json(silent=True) or {}
+    try:
+        marker = int(payload.get("marker"))
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "잘못된 상품 번호입니다."}), 400
+    svg_filename, error = remove_selected_product(marker)
+    if error:
+        return jsonify({"ok": False, "error": error}), 400
+    return jsonify(
+        {
+            "ok": True,
+            "marker": marker,
+            "svg_markup": read_generated_svg(svg_filename),
+            "scene_3d": final_scene_3d(),
+        }
+    )
+
+
 @app.route(
     "/add-product",
     methods=["POST"],
@@ -4332,9 +4397,15 @@ def add_product():
         )
     )
 
+    # 지운 상품이 있으면 '개수 + 1'은 남은 상품과 번호가 겹친다.
+    # 평면도 번호·3D 위치 보정(product_<번호>)이 번호로 연결되므로 가장 큰 번호 + 1을 쓴다
     marker = (
-        len(
-            selected_products
+        max(
+            [
+                int(item.get("marker") or 0)
+                for item in selected_products
+            ]
+            or [0]
         )
         + 1
     )

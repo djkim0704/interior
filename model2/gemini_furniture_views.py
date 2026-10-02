@@ -28,6 +28,7 @@ import os
 import re
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from collections import deque
 from pathlib import Path
 from typing import Any
@@ -348,15 +349,20 @@ def generate_object_views(
     result: dict[str, Any] = {}
 
     def entry_for(key: str) -> dict[str, Any] | None:
+        """있는 그림만 담는다. 앞 그림만 있어도 바로 보여 주고(나머지 방향은 앞 그림으로
+        대신) 빠진 방향은 이어서 그린다. 예전에는 네 장이 다 있어야 보여서, 도중에
+        페이지를 벗어나면 그 가구는 그림 없이 남았다."""
         views, sizes = {}, {}
         for name in names:
             path = out_dir / f"{key}_{name}.png"
             if not path.is_file():
-                return None
+                continue
             views[name] = f"{url_prefix}/{VIEWS_DIR}/{path.name}"
             with Image.open(path) as png:
                 sizes[name] = [png.width, png.height]
-        return {"views": views, "sizes": sizes, "model": model}
+        if "front" not in views:
+            return None
+        return {"views": views, "sizes": sizes, "model": model, "complete": len(views) == len(names)}
 
     pending = []
     for obj in scene.get("objects") or []:
@@ -368,7 +374,8 @@ def generate_object_views(
         cached = entry_for(key)
         if cached:
             result[item["id"]] = cached
-            continue
+            if cached["complete"]:
+                continue
         failed = out_dir / f"{key}.failed"
         if failed.is_file() and time.time() - failed.stat().st_mtime < FAILURE_COOLDOWN_SECONDS:
             continue
@@ -408,10 +415,9 @@ def generate_object_views(
                         contents.append(types.Part.from_bytes(data=item["reference"], mime_type="image/jpeg"))
                     front_path.write_bytes(_draw(client, model, contents))
                 front_bytes = front_path.read_bytes()
-                for name in names[1:]:
-                    path = out_dir / f"{key}_{name}.png"
-                    if path.is_file():
-                        continue
+                missing = [name for name in names[1:] if not (out_dir / f"{key}_{name}.png").is_file()]
+
+                def draw_turn(name: str) -> None:
                     side, turn = TURNS[name]
                     contents = [
                         TURN_PROMPT.format(side=side, turn=turn, **facts),
@@ -419,10 +425,27 @@ def generate_object_views(
                     ]
                     if item["reference"]:
                         contents.append(types.Part.from_bytes(data=item["reference"], mime_type="image/jpeg"))
-                    path.write_bytes(_draw(client, model, contents))
+                    (out_dir / f"{key}_{name}.png").write_bytes(_draw(client, model, contents))
+
+                # 옆·뒤 그림은 서로 기다릴 이유가 없어 동시에 그린다(가구당 대기 4회분 → 2회분).
+                # 하나가 실패해도 그린 방향은 남기고, 빠진 방향은 다음 요청에서 다시 그린다
+                errors = []
+                if missing:
+                    with ThreadPoolExecutor(max_workers=len(missing)) as pool:
+                        for future in [pool.submit(draw_turn, name) for name in missing]:
+                            try:
+                                future.result()
+                            except Exception as turn_exc:
+                                errors.append(turn_exc)
+                if errors:
+                    raise errors[0]
             except Exception as exc:
                 print(f"[gemini-furniture-views] {item['id']} 그림 생성 실패: {exc}")
                 (out_dir / f"{key}.failed").write_text(f"{int(time.time())}\n{type(exc).__name__}: {exc}", encoding="utf-8")
+                # 앞 그림이라도 있으면 바로 보여 준다
+                partial = entry_for(key)
+                if partial:
+                    result[item["id"]] = partial
                 continue
             cached = entry_for(key)
             if cached:

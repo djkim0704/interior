@@ -219,10 +219,10 @@
 
 {% block extra_js %}
 <script
-  src="{{ url_for('static', filename='js/floorplan_drag.js', v='20261002-room-style') }}"
+  src="{{ url_for('static', filename='js/floorplan_drag.js', v='20261003-remove') }}"
 ></script>
 <script
-  src="{{ url_for('static', filename='js/floorplan_edit.js', v='20261002-room-style') }}"
+  src="{{ url_for('static', filename='js/floorplan_edit.js', v='20261003-remove') }}"
   data-save-url="{{ url_for('save_floorplan_edit') }}"
 ></script>
 <script
@@ -246,7 +246,7 @@
   </script>
   <script
     type="module"
-    src="{{ url_for('static', filename='js/floorplan_3d.js', v='20261002-room-style') }}"
+    src="{{ url_for('static', filename='js/floorplan_3d.js', v='20261003-remove') }}"
   ></script>
 {% endif %}
 {% endblock %}

@@ -152,6 +152,8 @@
   }
 
   async function addProduct(product, btn) {
+    // 이미 추가된 상품의 버튼은 '빼기'로 쓴다(아래 onclick). 다시 추가하지 않는다
+    if (btn.dataset.marker) return;
     btn.disabled = true;
     btn.textContent = "추가 중…";
     try {
@@ -181,14 +183,74 @@
       if (data.scene_3d) {
         window.dispatchEvent(new CustomEvent("floorplan:scene-updated", { detail: data.scene_3d }));
       }
+      // 방금 추가한 상품은 같은 버튼으로 바로 뺄 수 있게 한다
       btn.className = "btn btn-sm btn-success mt-auto add-btn";
-      btn.textContent = "추가됨 ✓";
+      btn.textContent = "추가됨 ✓ · 빼기";
+      btn.disabled = false;
+      const marker = data.product && data.product.marker;
+      if (marker) btn.dataset.marker = String(marker);
+      btn.onclick = async () => {
+        if (!btn.dataset.marker) return;
+        btn.disabled = true;
+        if (await removeProduct(Number(btn.dataset.marker))) {
+          delete btn.dataset.marker;
+          btn.className = "btn btn-sm btn-outline-dark mt-auto add-btn";
+          btn.textContent = "평면도에 추가";
+          btn.onclick = null;
+        }
+        btn.disabled = false;
+      };
     } catch (err) {
       console.error(err);
       btn.textContent = "오류";
       btn.disabled = false;
     }
   }
+
+  // 상품 빼기: 선택 목록에서 지우고 평면도·3D를 다시 그린다
+  async function removeProduct(marker) {
+    try {
+      const res = await fetch("/remove-product", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({ marker }),
+      });
+      const data = await res.json();
+      if (!data.ok) {
+        status.textContent = data.error || "상품을 빼지 못했습니다.";
+        return false;
+      }
+      if (planBox && data.svg_markup) {
+        planBox.innerHTML = data.svg_markup;
+        if (window.initFloorplanDrag) window.initFloorplanDrag();
+      }
+      if (data.scene_3d) {
+        window.dispatchEvent(new CustomEvent("floorplan:scene-updated", { detail: data.scene_3d }));
+      }
+      // 아래 "선택한 추천 가구" 목록에서도 그 카드를 지운다
+      document.querySelectorAll(`.remove-product-btn[data-marker="${marker}"]`).forEach((el) => {
+        const card = el.closest("[class*='col-']");
+        if (card) card.remove();
+      });
+      return true;
+    } catch (err) {
+      console.error(err);
+      status.textContent = "네트워크 오류가 발생했습니다.";
+      return false;
+    }
+  }
+
+  document.querySelectorAll(".remove-product-btn").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      btn.disabled = true;
+      btn.textContent = "빼는 중…";
+      if (!(await removeProduct(Number(btn.dataset.marker)))) {
+        btn.disabled = false;
+        btn.textContent = "삭제";
+      }
+    });
+  });
 
   searchBtn.addEventListener("click", search);
   if (recommendBtn) recommendBtn.addEventListener("click", recommend);
