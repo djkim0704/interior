@@ -89,7 +89,7 @@
 
   <div class="mb-4">
     <p class="text-muted small mb-2">
-      STEP 5
+      STEP 4
     </p>
 
     <h3 class="mb-2">
@@ -133,9 +133,43 @@
     </div>
 
     <div class="col-12 col-lg-6">
-      <h5 class="mb-3">
-        선택 반영 평면도
-      </h5>
+      <div class="d-flex justify-content-between align-items-center mb-3">
+        <h5 class="mb-0">
+          선택 반영 평면도
+        </h5>
+        {% if scene_3d %}
+        <button id="floorplanViewToggle" type="button" class="btn btn-sm btn-outline-dark rounded-pill px-3">
+          3D로 보기
+        </button>
+        {% endif %}
+      </div>
+
+      {% if scene_3d %}
+      {# 2D와 같은 Scene Graph로 그린 3D. 여기서 옮기거나 돌려도 2D에 바로 반영된다 #}
+      <div id="floorplan3dControls" class="d-none btn-group btn-group-sm mb-2 flex-wrap" role="group" aria-label="3D 시점">
+        <button type="button" class="btn btn-outline-secondary active" data-view-preset="iso">입체</button>
+        <button type="button" class="btn btn-outline-secondary" data-view-preset="top">위에서</button>
+        <button type="button" class="btn btn-outline-secondary" data-view-preset="eye">눈높이</button>
+        <button type="button" class="btn btn-outline-dark d-none" id="floorplan3dEdit">가구 옮기기</button>
+        <button type="button" class="btn btn-outline-danger d-none" id="floorplan3dRemove" disabled title="고른 상품을 결과에서 뺍니다">지우기</button>
+        <button type="button" class="btn btn-outline-dark d-none" id="floorplan3dRotate" disabled title="고른 가구를 90° 돌립니다 (R 키)">↻ 회전</button>
+        <button type="button" class="btn btn-outline-secondary active" id="floorplan3dGrid">격자 숨기기</button>
+      </div>
+      <div
+        id="floorplan3dBox"
+        class="d-none border mb-2"
+        style="height: 460px; border-radius: 14px; overflow: hidden;"
+        {# 저장 디자인(읽기 전용)은 보기만 한다. 편집 주소를 주면 지금 세션의 배치를 고치게 된다 #}
+        {% if not readonly %}
+        data-edit-url="{{ url_for('edit_scene') }}"
+        data-parts-url="{{ url_for('scene_object_parts') }}"
+        data-views-url="{{ url_for('scene_object_views') }}"
+        {% endif %}
+        data-edit-context="final"
+        data-box2d="modifiedPlanCard"
+      ></div>
+      <p id="floorplan3dStatus" class="small text-muted mb-2" aria-live="polite"></p>
+      {% endif %}
 
       <div class="floorplan-result-card floorplan-svg-box" id="modifiedPlanCard">
         {% if modified_svg_markup %}
@@ -161,28 +195,27 @@
   <section class="mb-5">
     <h5 class="mb-3">상품 추가</h5>
     <p class="text-muted small mb-3">
-      원하는 가구를 검색해 평면도에 추가할 수 있어요. 가구 종류를 고르고 검색해 보세요.
+      가구 종류를 고르고 검색하거나 추천받아 보세요. 상품마다 이 방에 실제로 놓아 보고
+      무드·공간·크기 적합도를 보여 줍니다. 아래 "가구 선택 요약"에서 교체로 표시한 가구가
+      있으면 그 자리에 맞는 상품을 우선합니다.
     </p>
 
     <div class="row g-2 align-items-center mb-3" style="max-width: 720px;">
       <div class="col-4 col-md-3">
         <select id="productType" class="form-select">
-          <option value="chair">의자</option>
-          <option value="desk">책상</option>
-          <option value="table">테이블</option>
-          <option value="shelf">선반</option>
-          <option value="cabinet">수납장</option>
-          <option value="lamp">조명</option>
-          <option value="rug">러그</option>
-          <option value="plant">식물</option>
+          {% for kind, label in (purchase_labels or {}).items() %}
+          <option value="{{ kind }}">{{ label }}</option>
+          {% endfor %}
         </select>
       </div>
       <div class="col">
         <input id="productQuery" type="text" class="form-control"
                placeholder="예: 원목 의자, 스탠드 조명">
       </div>
-      <div class="col-auto">
+      <div class="col-auto d-flex gap-2">
         <button id="productSearchBtn" type="button" class="btn btn-dark">검색</button>
+        {# 무드 + 실제 크기 + 방 크기 + 충돌 + 동선을 함께 본 추천 (항목 8·21) #}
+        <button id="productRecommendBtn" type="button" class="btn btn-outline-dark">추천받기</button>
       </div>
     </div>
 
@@ -207,6 +240,8 @@
               gap-3
             "
             data-source-index="{{ choice.source_index }}"
+            data-scene-id="{{ choice.scene_id or '' }}"
+            data-type="{{ choice.type }}"
           >
             <span>
               {{ choice.item }}
@@ -219,6 +254,13 @@
               <button type="button"
                 class="btn {{ 'btn-danger' if choice.decision == 'remove' else 'btn-outline-danger' }}"
                 data-decision="remove">제거</button>
+              {% if choice.type in replaceable_types %}
+              {# 교체: 같은 종류 상품을 추가하면 이 가구 자리·방향 그대로 놓인다 (항목 13·14) #}
+              <button type="button"
+                class="btn {{ 'btn-primary' if choice.decision == 'replace' else 'btn-outline-primary' }}"
+                data-decision="replace"
+                title="같은 종류 상품을 추가하면 이 자리에 놓여요">교체</button>
+              {% endif %}
             </div>
           </div>
         </div>
@@ -334,6 +376,17 @@
                 }}
               </p>
 
+              {% if not readonly %}
+              {# 추가한 상품을 결과에서 뺀다. 평면도와 3D가 함께 다시 그려진다 #}
+              <button
+                type="button"
+                class="btn btn-sm btn-outline-danger remove-product-btn mb-2"
+                data-marker="{{ product.marker }}"
+              >
+                삭제
+              </button>
+              {% endif %}
+
               {% if product.link %}
                 <a
                   href="{{ product.link }}"
@@ -365,7 +418,7 @@
 
   <div class="result-actions d-flex flex-wrap gap-2">
     {% if not readonly %}
-      {# STEP 6 — 선택이 반영된 AI 입체 SVG와 3D 배치 확인 #}
+      {# STEP 5 — 선택이 반영된 AI 입체 SVG와 3D 배치 확인 #}
       <a
         href="{{ url_for('preview_3d') }}"
         class="
@@ -480,14 +533,30 @@
 <script
   src="{{ url_for(
     'static',
-    filename='js/result_toggle.js'
+    filename='js/result_toggle.js',
+    v='20261003-no-labels'
   ) }}"
 ></script>
 
 <script
   src="{{ url_for(
     'static',
-    filename='js/result_products.js'
+    filename='js/result_products.js',
+    v='20261003-no-labels'
   ) }}"
 ></script>
+{% if scene_3d %}
+<script type="application/json" id="floorplan3dScene">
+  {{ scene_3d | tojson }}
+</script>
+<script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+    }
+  }
+</script>
+<script type="module" src="{{ url_for('static', filename='js/floorplan_3d.js', v='20261003-no-labels') }}"></script>
+{% endif %}
 {% endblock %}

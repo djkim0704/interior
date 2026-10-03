@@ -15,6 +15,7 @@ python-dotenv
 google-genai
 ultralytics          # YOLO (backend/app.py의 가구 탐지)
 numpy
+scipy                # 배치 보정 동선 계산(ndimage), 평가 지표 매칭. scikit-learn도 쓰지만 직접 쓰므로 명시
 pandas               # mood_search_v1 라이브러리 빌드·라벨링의 metadata.csv
 matplotlib
 scikit-learn

@@ -34,8 +34,15 @@ output/floorplans/*
 #   python -c "from mood_search_v1 import run_embedding, run_clustering, run_labeling"
 data/
 
-# 무드 라이브러리 산출물 (약 207MB) — mood_search_v1.run_build_library 로 재생성
-mood_library/
+# 무드 라이브러리는 임베딩·색인(약 3MB)만 커밋한다. 만드는 데 오래 걸리는 부분이라 올려 두면
+# clone한 사람은 사진만 images/final에 넣고 바로 쓴다(임베딩을 다시 만들지 않는다).
+# 사진 사본(약 200MB)은 images/final과 같은 사진이라 빼고, 없으면 원본에서 찾는다
+# (mood_search_v1.config.resolve_library_image).
+mood_library/**/*.jpg
+mood_library/**/*.JPG
+mood_library/**/*.jpeg
+mood_library/**/*.png
+mood_library/**/*.webp
 
 # 업로드/생성 이미지 (프론트 런타임 산출물)
 frontend/static/uploads/*
@@ -51,3 +58,9 @@ images/final/*
 
 # YOLO 가중치 (최초 실행 시 자동 다운로드)
 *.pt
+
+# 평가 산출물 — Gemini 호출 기록·재생용 응답·평가 실행 결과 (재생성 가능)
+#   기준값처럼 남겨야 하는 결과는 docs/metrics/ 에 따로 저장한다
+output/metrics/
+output/gemini_replay/
+output/eval/

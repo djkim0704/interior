@@ -1,0 +1,142 @@
+"""2D 가구 그림을 3D로 세우는 자료(art_solid). 외부 호출 없음."""
+from __future__ import annotations
+
+import sys
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from model2 import art_solid, scene_render_2d  # noqa: E402
+from model2.gemini_floorplan_artwork import parse_artwork  # noqa: E402
+
+SOFA = {"id": "sofa_1", "type": "sofa", "label": "소파", "cx": 1, "cy": 1, "w_m": 2.0, "d_m": 0.9, "rotation_deg": 0}
+
+ARTWORK = {
+    "defs": '<linearGradient id="gx-cush"><stop stop-color="#111111"/><stop stop-color="#d9c2a0"/>'
+            '<stop stop-color="#222222"/></linearGradient>'
+            '<radialGradient id="gx-shadow-grad"><stop stop-color="#000"/></radialGradient>',
+    "objects": {
+        "sofa_1": {
+            "markup": '<ellipse cx="100" cy="50" rx="120" ry="70" fill="url(#gx-shadow-grad)"/>'
+                      '<rect x="0" y="0" width="200" height="100" fill="url(#gx-cush)" data-z0="0" data-z1="0.5"/>'
+                      '<rect x="300" y="300" width="10" height="10" fill="#333" data-only3d="1"/>',
+        }
+    },
+}
+
+
+class ObjectSolidTests(unittest.TestCase):
+    def test_gradients_become_solid_colors_and_shadows_are_skipped(self) -> None:
+        solid = art_solid.object_solid(SOFA, ARTWORK)
+        self.assertEqual(solid["source"], "gemini")
+        self.assertNotIn("url(#", solid["svg"])
+        self.assertIn('fill="#d9c2a0"', solid["svg"])  # 가운데 정지점
+        self.assertIn('data-3d="skip"', solid["svg"])  # 그림자 칠
+        self.assertIn('data-z1="0.5"', solid["svg"])  # 높이 정보는 그대로
+
+    def test_box_matches_2d_and_ignores_3d_only_parts(self) -> None:
+        # 3D 전용 부품(다리 등)은 2D 맞춤 범위에 넣지 않는다. 넣으면 2D와 3D 외곽이 달라진다
+        solid = art_solid.object_solid(SOFA, ARTWORK)
+        self.assertIn("data-only3d", solid["svg"])
+        markup2d = scene_render_2d.strip_only3d(ARTWORK["objects"]["sofa_1"]["markup"])
+        self.assertNotIn("data-only3d", markup2d)
+        self.assertEqual(solid["box"], [round(v, 3) for v in scene_render_2d._artwork_box(markup2d)])
+
+    def test_shadow_already_marked_skip_is_not_duplicated(self) -> None:
+        # Gemini가 이미 data-3d="skip"을 적은 그림자에 또 붙이면 XML이 깨져 가구가 3D에서 빠졌다
+        art = {"defs": ARTWORK["defs"], "objects": {"sofa_1": {"markup": (
+            '<ellipse cx="50" cy="50" rx="50" ry="50" fill="url(#gx-shadow-grad)" data-3d="skip"/>'
+            '<rect x="10" y="10" width="80" height="80" fill="#8c5d38" data-z0="0.9" data-z1="1"/>'
+        )}}}
+        solid = art_solid.object_solid(SOFA, art)
+        self.assertIsNotNone(solid)
+        self.assertEqual(solid["svg"].count('data-3d="skip"'), 1)
+
+    def test_malformed_paint_reference(self) -> None:
+        art = {"defs": ARTWORK["defs"], "objects": {"sofa_1": {"markup": '<rect width="10" height="10" fill="url(#gx-cush, url(#x))"/>'}}}
+        self.assertNotIn("url(", art_solid.object_solid(SOFA, art)["svg"])
+
+    def test_added_product_uses_its_2d_icon(self) -> None:
+        # 2D에 그린 상품 아이콘을 3D도 그대로 세운다(코드 기본 모양 대신)
+        icon = (
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200"><defs>'
+            '<linearGradient id="pi-x-seat"><stop stop-color="#334455"/></linearGradient></defs>'
+            '<g id="pi-x-icon"><rect x="20" y="30" width="160" height="140" fill="url(#pi-x-seat)" '
+            'data-z0="0.4" data-z1="0.5"/></g></svg>'
+        )
+        solid = art_solid.object_solid({**SOFA, "id": "product_1", "type": "chair", "icon_svg": icon}, ARTWORK)
+        self.assertEqual(solid["source"], "product_icon")
+        self.assertEqual(solid["box"], [20.0, 30.0, 180.0, 170.0])
+        self.assertIn('fill="#334455"', solid["svg"])
+        self.assertIn('data-z1="0.5"', solid["svg"])
+
+    def test_code_shape_when_no_artwork(self) -> None:
+        solid = art_solid.object_solid({**SOFA, "id": "product_1", "type": "desk"}, ARTWORK)
+        self.assertEqual(solid["source"], "code")
+        self.assertTrue(solid["box"][2] > solid["box"][0])
+
+    def test_doors_and_windows_are_not_solids(self) -> None:
+        self.assertIsNone(art_solid.object_solid({**SOFA, "type": "door"}, None))
+
+    def test_2d_plan_hides_3d_only_parts(self) -> None:
+        graph = {
+            "schema": "scene_graph_v1",
+            "room": {"width_m": 4, "depth_m": 3},
+            "objects": [SOFA],
+        }
+        svg = scene_render_2d.render_svg(graph, artwork={**ARTWORK, "objects": ARTWORK["objects"]})
+        self.assertNotIn("data-only3d", svg)
+
+
+class ArtworkHeightTests(unittest.TestCase):
+    """그림 요청이 가구 이름·사진으로 판단한 높이를 3D 높이로 쓴다."""
+
+    def test_height_is_parsed_and_applied(self) -> None:
+        from model2.web_floorplan import apply_artwork_heights
+
+        text = (
+            '<svg xmlns="http://www.w3.org/2000/svg"><defs></defs>'
+            '<g id="rug_1" data-w="200" data-h="180" data-height-m="0.015"><rect width="200" height="180" fill="#a33"/></g>'
+            '<g id="sofa_1" data-w="200" data-h="90" data-height-m="99"><rect width="200" height="90" fill="#333"/></g></svg>'
+        )
+        art = parse_artwork(text, ["rug_1", "sofa_1"])
+        self.assertEqual(art["objects"]["rug_1"]["height_m"], 0.015)
+        self.assertIsNone(art["objects"]["sofa_1"]["height_m"])  # 범위 밖 값은 버린다
+        graph = {"objects": [
+            {"id": "rug_1", "h_m": 1.41, "h_source": "room_ratio"},
+            {"id": "sofa_1", "h_m": 0.8},
+        ]}
+        apply_artwork_heights(graph, art)
+        self.assertEqual((graph["objects"][0]["h_m"], graph["objects"][0]["h_source"]), (0.015, "svg"))
+        self.assertEqual(graph["objects"][1]["h_m"], 0.8)
+
+    def test_weak_height_is_sent_as_unknown(self) -> None:
+        from model2.gemini_floorplan_artwork import _prompt
+
+        prompt = _prompt({"objects": [
+            {"id": "rug_1", "type": "rug", "label": "러그", "w_m": 2.0, "d_m": 1.8, "h_m": 1.41, "h_source": "room_ratio"},
+            {"id": "sofa_1", "type": "sofa", "label": "소파", "w_m": 2.0, "d_m": 0.9, "h_m": 0.8},
+        ]})
+        self.assertIn("rug_1 | rug | 러그 | 240 x 216 | unknown", prompt)
+        self.assertIn("| 0.80 m |", prompt)
+
+
+class ArtworkParseTests(unittest.TestCase):
+    def test_height_attributes_survive_parsing(self) -> None:
+        text = (
+            '<svg xmlns="http://www.w3.org/2000/svg"><defs></defs>'
+            '<g id="sofa_1" data-w="200" data-h="90"><rect width="200" height="90" fill="#123456" '
+            'data-z0="0" data-z1="0.5" data-soft="0.4"/><rect x="5" y="5" width="8" height="8" data-only3d="1"/></g></svg>'
+        )
+        art = parse_artwork(text, ["sofa_1"])
+        markup = art["objects"]["sofa_1"]["markup"]
+        for attr in ('data-z1="0.5"', 'data-soft="0.4"', 'data-only3d="1"'):
+            self.assertIn(attr, markup)
+
+
+if __name__ == "__main__":
+    unittest.main()
+

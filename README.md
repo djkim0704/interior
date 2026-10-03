@@ -31,11 +31,14 @@ Copy-Item .env.example .env
 # .env 를 열어 GEMINI_API_KEY / NAVER_CLIENT_ID / NAVER_CLIENT_SECRET 채우기
 ```
 - `GEMINI_API_KEY` — https://aistudio.google.com/apikey (model1/model2 필수)
-- `NAVER_CLIENT_ID/SECRET` — https://developers.naver.com/apps (가구 추천용, 없으면 그 기능만 비활성)
-- 모델명·옵션(`GEMINI_ANALYSIS_MODEL`, `GEMINI_THINKING_BUDGET`, `GEMINI_LAYOUT_REFINE` 등)은 선택 —
+- `SERPAPI_API_KEY` — https://serpapi.com/manage-api-key (가구 추천용, 없으면 그 기능만 비활성)
+- 모델명·옵션(`GEMINI_ANALYSIS_MODEL`, `GEMINI_LAYOUT_MODEL` 등)은 선택 —
   `.env`에 넣으면 코드 수정 없이 덮어쓸 수 있습니다. 자세한 목록은 [REPO_STRUCTURE.md](REPO_STRUCTURE.md#환경변수-env).
 
 > **가상환경(venv)은 git에 포함하지 않습니다.** 아래 방법으로 각자 생성하세요.
+
+> **무드 검색용 사진**: 무드 라이브러리 임베딩은 저장소에 들어 있습니다. 원본 사진만
+> 전달받아 `images/final/`에 넣으면 기다림 없이 바로 무드 검색이 됩니다.
 
 ---
 

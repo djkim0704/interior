@@ -9,6 +9,7 @@ import math
 import os
 import random
 import re
+import threading
 import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
@@ -40,6 +41,16 @@ except ImportError:
 
 LOGGER = logging.getLogger("furniture-recommendation")
 LOGGER.setLevel(logging.INFO)
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_SERPAPI_CACHE_DIR = (
+    PROJECT_ROOT
+    / "frontend"
+    / "static"
+    / "generated"
+    / "product_cache"
+    / "serpapi_search_v1"
+)
 
 DISPLAY_PER_QUERY = 30
 #SerpApi 1회 응답에서 최대 30개 상품만 후보로 사용
@@ -73,13 +84,25 @@ class ImageSimilarityService(Protocol):
 
 
 class ClipImageSimilarityService:
-    """Reuse the project's CLIP encoder with URL-keyed disk embeddings."""
+    """Reuse the project's CLIP encoder with URL-keyed disk embeddings.
+
+    기준은 두 가지다. 사용자가 고른 무드 이미지가 있으면 이미지↔상품 이미지 유사도,
+    없으면 무드 문장(예: "warm cozy style sofa")↔상품 이미지 유사도를 쓴다. 예전에는
+    무드 이미지를 고르지 않으면 CLIP이 아예 꺼졌다.
+
+    상품 썸네일 하나를 못 받았다고 CLIP 전체를 끄지 않는다. Google Shopping 썸네일은
+    연속으로 받으면 가끔 막히는데, 예전에는 한 장만 실패해도 그 요청의 나머지 상품이
+    모두 CLIP 없이 정렬됐다. 연속 실패가 MAX_CONSECUTIVE_FAILURES번일 때만 끈다.
+    """
+
+    MAX_CONSECUTIVE_FAILURES = 5
 
     def __init__(self, cache_dir: str | Path) -> None:
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self._reference_cache: dict[str, Any] = {}
         self._disabled = False
+        self._failures = 0
 
     def _encode_path(self, path: Path) -> Any:
         from mood_search_v1 import search as mood_search
@@ -92,47 +115,107 @@ class ClipImageSimilarityService:
             device,
         )[0]
 
+    def _encode_text(self, text: str) -> Any:
+        from mood_search_v1 import search as mood_search
+
+        return mood_search._encode_prompt(text)
+
+    def _product_embedding(self, product_image_url: str) -> Any:
+        import numpy as np
+
+        image_key = hashlib.sha256(product_image_url.encode("utf-8")).hexdigest()[:24]
+        embedding_path = self.cache_dir / f"{image_key}.npy"
+        image_path = self.cache_dir / f"{image_key}.img"
+        if embedding_path.exists():
+            return np.load(embedding_path)
+        if not image_path.exists():
+            with requests.Session() as http:
+                http.trust_env = False
+                response = http.get(product_image_url, timeout=12)
+                response.raise_for_status()
+            image_path.write_bytes(response.content)
+        embedding = self._encode_path(image_path)
+        np.save(embedding_path, embedding)
+        return embedding
+
+    def _guarded(self, compute: Any) -> float | None:
+        if self._disabled:
+            return None
+        try:
+            value = compute()
+            self._failures = 0
+            return value
+        except Exception as exc:
+            self._failures += 1
+            LOGGER.warning("clip_item_failed failures=%d error=%s", self._failures, exc)
+            if self._failures >= self.MAX_CONSECUTIVE_FAILURES:
+                self._disabled = True
+                LOGGER.warning("clip_disabled_after_consecutive_failures")
+            return None
+
     def similarity(
         self,
         reference_image: str | Path,
         product_image_url: str,
     ) -> float | None:
-        """Return CLIP cosine similarity, caching each product embedding."""
-        import numpy as np
-
-        if self._disabled:
-            return None
+        """Return CLIP image-image similarity mapped to 0..1."""
         reference_path = Path(reference_image)
         if not reference_path.is_file() or not product_image_url:
             return None
-        reference_key = str(reference_path.resolve())
-        try:
+
+        def compute() -> float:
+            reference_key = str(reference_path.resolve())
             reference_embedding = self._reference_cache.get(reference_key)
             if reference_embedding is None:
                 reference_embedding = self._encode_path(reference_path)
                 self._reference_cache[reference_key] = reference_embedding
-
-            image_key = hashlib.sha256(product_image_url.encode("utf-8")).hexdigest()[:24]
-            embedding_path = self.cache_dir / f"{image_key}.npy"
-            image_path = self.cache_dir / f"{image_key}.img"
-            if embedding_path.exists():
-                product_embedding = np.load(embedding_path)
-            else:
-                if not image_path.exists():
-                    with requests.Session() as http:
-                        http.trust_env = False
-                        response = http.get(product_image_url, timeout=12)
-                        response.raise_for_status()
-                    image_path.write_bytes(response.content)
-                product_embedding = self._encode_path(image_path)
-                np.save(embedding_path, product_embedding)
-            similarity = float(product_embedding @ reference_embedding)
+            similarity = float(self._product_embedding(product_image_url) @ reference_embedding)
             # CLIP cosine can be negative; recommendation weights expect 0..1.
             return max(0.0, min(1.0, (similarity + 1.0) / 2.0))
-        except Exception as exc:
-            self._disabled = True
-            LOGGER.warning("clip_disabled_after_failure error=%s", exc)
+
+        return self._guarded(compute)
+
+    def text_similarity(self, text: str, product_image_url: str) -> float | None:
+        """무드 문장↔상품 이미지 유사도(0..1).
+
+        CLIP의 문장↔이미지 코사인은 이미지↔이미지보다 훨씬 좁은 범위(대략 0.15~0.35)에
+        몰린다. 그대로 쓰면 모든 상품이 비슷한 점수가 되므로 그 범위를 0..1로 펼친다.
+        """
+        if not text or not product_image_url:
             return None
+
+        def compute() -> float:
+            key = "text:" + text
+            reference_embedding = self._reference_cache.get(key)
+            if reference_embedding is None:
+                reference_embedding = self._encode_text(text)
+                self._reference_cache[key] = reference_embedding
+            similarity = float(self._product_embedding(product_image_url) @ reference_embedding)
+            return max(0.0, min(1.0, (similarity - 0.15) / 0.20))
+
+        return self._guarded(compute)
+
+
+def mood_clip_text(category: str, mood_scores: dict[str, float]) -> str:
+    """CLIP에 줄 영어 무드 문장. 무드 이미지를 고르지 않았을 때의 기준이다.
+
+    CLIP은 영어로 학습돼서 한국어 무드 이름보다 영어 표현이 훨씬 잘 맞는다.
+    무드 별칭과 카테고리 별칭에 있는 영어 표현을 쓴다.
+    """
+    category = normalize_category(category)
+    noun = next(
+        (alias for alias, mapped in CATEGORY_ALIASES.items() if mapped == category and alias.isascii()),
+        "furniture",
+    ).replace("_", " ")
+    ranked = sorted(mood_scores.items(), key=lambda kv: -float(kv[1]))[:2]
+    words: list[str] = []
+    for mood, _ in ranked:
+        for alias in MOOD_ALIASES.get(mood, ()):
+            if alias.isascii() and alias not in words:
+                words.append(alias)
+                break
+    style = " and ".join(words) or "modern"
+    return f"a {style} style {noun}, interior furniture product photo"
 
 
 class _SerpApiError(ValueError):
@@ -182,6 +265,8 @@ class SerpApiShoppingProvider:
         *,
         timeout: float | None = None,
         retries: int | None = None,
+        cache_dir: str | Path | None = None,
+        cache_ttl_seconds: int | None = None,
     ) -> None:
         # Google Shopping 검색은 캐시되지 않은 질의에서 10초를 넘기는 일이
         # 잦다. 상품 1종마다 질의를 여러 번 돌리므로 10초/재시도 0회에서는
@@ -204,9 +289,92 @@ class SerpApiShoppingProvider:
         self.location = os.getenv("SERPAPI_LOCATION", "").strip()
         self.timeout = timeout
         self.retries = max(0, min(int(retries), 2))
+        configured_cache = str(
+            cache_dir
+            or os.getenv("SERPAPI_CACHE_DIR", "")
+        ).strip()
+        self.cache_dir = (
+            Path(configured_cache).expanduser()
+            if configured_cache
+            else DEFAULT_SERPAPI_CACHE_DIR
+        )
+        if not self.cache_dir.is_absolute():
+            self.cache_dir = PROJECT_ROOT / self.cache_dir
+        self.cache_ttl_seconds = (
+            max(0, int(cache_ttl_seconds))
+            if cache_ttl_seconds is not None
+            else _env_int("SERPAPI_CACHE_TTL_SECONDS", 6 * 60 * 60)
+        )
+        if self.cache_ttl_seconds > 0:
+            self.cache_dir.mkdir(parents=True, exist_ok=True)
         # prefetch()가 채워 두는 질의별 결과. 인스턴스는 요청마다 새로
         # 만들어지므로 요청 하나를 넘어 살아남지 않는다.
         self._prefetched: dict[tuple[str, int], list[dict[str, Any]]] = {}
+
+    def _cache_path(self, query: str, display: int) -> Path:
+        """검색 조건 전체를 포함한 재사용 가능한 캐시 파일 경로를 만든다."""
+        payload = json.dumps(
+            {
+                "version": 1,
+                "query": query,
+                "display": display,
+                "google_domain": self.google_domain,
+                "country": self.country,
+                "language": self.language,
+                "location": self.location,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        key = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:32]
+        return self.cache_dir / f"{key}.json"
+
+    def _load_cached(
+        self,
+        query: str,
+        display: int,
+    ) -> list[dict[str, Any]] | None:
+        """TTL 안의 정상 검색 결과가 있으면 반환한다."""
+        if self.cache_ttl_seconds <= 0:
+            return None
+        path = self._cache_path(query, display)
+        try:
+            age = time.time() - path.stat().st_mtime
+            if age > self.cache_ttl_seconds:
+                return None
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(payload, list):
+                return None
+            return [dict(item) for item in payload if isinstance(item, dict)]
+        except (OSError, ValueError, TypeError):
+            return None
+
+    def _save_cached(
+        self,
+        query: str,
+        display: int,
+        products: list[dict[str, Any]],
+    ) -> None:
+        """완료된 검색 결과를 원자적으로 저장한다."""
+        if self.cache_ttl_seconds <= 0:
+            return
+        path = self._cache_path(query, display)
+        temporary = path.with_suffix(
+            f".{os.getpid()}.{threading.get_ident()}.tmp"
+        )
+        try:
+            temporary.write_text(
+                json.dumps(products, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            temporary.replace(path)
+        except OSError as exc:
+            LOGGER.warning("serpapi_cache_write_failed path=%s error=%s", path, exc)
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     def prefetch(
         self,
@@ -264,7 +432,11 @@ class SerpApiShoppingProvider:
         query: str,
         display: int = DISPLAY_PER_QUERY,
     ) -> list[dict[str, Any]]:
-        """SerpApi를 검색하고 추천 로직이 사용하는 공통 필드로 정규화한다."""
+        """캐시를 확인한 뒤 SerpApi 결과를 공통 상품 형식으로 정규화한다."""
+        cached = self._load_cached(query, display)
+        if cached is not None:
+            LOGGER.info("serpapi_cache_hit query=%r count=%d", query, len(cached))
+            return cached
         if not self.api_key:
             raise ValueError(
                 "SERPAPI_API 또는 SERPAPI_API_KEY가 없습니다."
@@ -363,7 +535,9 @@ class SerpApiShoppingProvider:
                     }
                     for item in payload.get("shopping_results", [])
                 ]
-                return products[: max(1, min(int(display), 100))]
+                products = products[: max(1, min(int(display), 100))]
+                self._save_cached(query, display, products)
+                return products
             except (requests.RequestException, ValueError) as exc:
                 last_error = (
                     RuntimeError(
@@ -624,7 +798,9 @@ guess materials or forms that are not visible.
                 ".jpeg": "image/jpeg",
                 ".jpg": "image/jpeg",
             }.get(image_path.suffix.lower(), "image/jpeg")
-            client = genai.Client(api_key=api_key)
+            from model2.gemini_telemetry import instrument
+
+            client = instrument(genai.Client(api_key=api_key))
             response = client.models.generate_content(
                 model=model,
                 contents=[
@@ -1033,8 +1209,16 @@ def recommend_furniture(
     provider: ProductSearchProvider,
     image_similarity_service: ImageSimilarityService | None = None,
     final_limit: int = FINAL_RECOMMENDATION_COUNT,
+    spatial_scorer: Any = None,
+    spatial_top_n: int = 15,
+    mood_text: str | None = None,
 ) -> tuple[list[dict[str, Any]], set[str], list[str]]:
-    """Run candidate collection, filtering, scoring and diverse selection."""
+    """Run candidate collection, filtering, scoring and diverse selection.
+
+    spatial_scorer(item) -> {"space", "size", "fits", "reasons", ...}가 주어지면
+    무드 점수 상위 spatial_top_n개를 방에 실제로 놓아 보고 공간·크기 적합도를
+    합친 점수로 다시 정렬한다(항목 8). 평가하지 않은 후보는 공간 점수를 0.5로 본다.
+    """
     category = normalize_category(category)
     queries = generate_search_queries(
         category,
@@ -1122,14 +1306,21 @@ def recommend_furniture(
         if (
             index in image_candidate_indexes
             and image_similarity_service
-            and selected_image
+            and (selected_image or mood_text)
             and item.get("image")
         ):
             try:
-                image_score = image_similarity_service.similarity(
-                    selected_image,
-                    str(item["image"]),
-                )
+                if selected_image:
+                    image_score = image_similarity_service.similarity(
+                        selected_image,
+                        str(item["image"]),
+                    )
+                elif hasattr(image_similarity_service, "text_similarity"):
+                    # 무드 이미지를 고르지 않았으면 무드 문장으로 CLIP을 쓴다
+                    image_score = image_similarity_service.text_similarity(
+                        mood_text,
+                        str(item["image"]),
+                    )
             except Exception as exc:
                 LOGGER.warning("image_similarity_failed url=%r error=%s", item.get("image"), exc)
         item["_image_similarity"] = image_score
@@ -1151,6 +1342,33 @@ def recommend_furniture(
         item["_final_score"] = min(1.0, final + min(occurrence[identity] - 1, 3) * 0.01)
 
     scoring_pool.sort(key=lambda item: float(item.get("_final_score", 0.0)), reverse=True)
+    if spatial_scorer is not None:
+        from model2.spatial_fit import WEIGHTS, combine
+
+        for index, item in enumerate(scoring_pool):
+            mood = float(item.get("_final_score", 0.0))
+            item["_mood_score"] = mood
+            fit = None
+            if index < spatial_top_n:
+                try:
+                    fit = spatial_scorer(item)
+                except Exception as exc:
+                    LOGGER.warning("spatial_fit_failed title=%r error=%s", item.get("title"), exc)
+            if fit is None:
+                item["_final_score"] = round(WEIGHTS["mood"] * mood + (WEIGHTS["space"] + WEIGHTS["size"]) * 0.5, 4)
+                continue
+            item["_final_score"] = combine(mood, fit)
+            # 화면에 보여 줄 적합도(항목 21)
+            item["fit"] = {
+                "mood": round(mood, 3),
+                "space": fit["space"],
+                "size": fit["size"],
+                "total": item["_final_score"],
+                "fits": fit.get("fits", True),
+                "reasons": fit.get("reasons", [])[:3],
+                "dimensions": fit.get("dimensions"),
+            }
+        scoring_pool.sort(key=lambda item: float(item.get("_final_score", 0.0)), reverse=True)
     selected = select_diverse_products(scoring_pool, final_limit)
     updated_ids = set(shown_product_ids)
     updated_ids.update(

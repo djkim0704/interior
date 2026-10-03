@@ -5,7 +5,7 @@
   const editButton = document.getElementById("floorplanEditButton");
   const nextButton = document.getElementById("floorplanNextButton");
   const status = document.getElementById("floorplanEditStatus");
-  const svg = box && box.querySelector("svg");
+  let svg = box && box.querySelector("svg");
 
   if (!svg || !editButton || !saveUrl) return;
 
@@ -61,8 +61,35 @@
       if (!response.ok || !result.ok) {
         throw new Error(result.error || "저장하지 못했습니다.");
       }
+      // 서버가 보정까지 마친 배치로 다시 그린 평면도를 주면 화면을 그것으로 바꾼다.
+      // 겹친 가구를 비켜 준 결과가 화면에 바로 보여야 2D와 3D가 같다.
+      if (result.svg) {
+        const holder = document.createElement("div");
+        holder.innerHTML = result.svg;
+        const fresh = holder.querySelector("svg");
+        if (fresh) {
+          svg.replaceWith(fresh);
+          svg = fresh;
+          if (window.initFloorplanDrag) window.initFloorplanDrag();
+        }
+      }
+      if (result.scene_3d) {
+        window.dispatchEvent(
+          new CustomEvent("floorplan:scene-updated", { detail: result.scene_3d })
+        );
+      }
+      if (result.uncertain) {
+        window.dispatchEvent(
+          new CustomEvent("floorplan:uncertain-updated", { detail: result.uncertain })
+        );
+      }
       setEditMode(false);
-      if (status) status.textContent = "수정한 배치를 저장했습니다.";
+      const moved = (result.adjustments || []).filter((item) => item.reason === "collision").length;
+      if (status) {
+        status.textContent = moved
+          ? `수정한 배치를 저장했습니다. 겹친 가구 ${moved}개를 옆으로 비켜 놓았어요.`
+          : "수정한 배치를 저장했습니다.";
+      }
       return true;
     } catch (error) {
       svg.dataset.editEnabled = "true";

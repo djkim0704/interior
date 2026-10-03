@@ -19,6 +19,13 @@ import requests
 from PIL import Image
 
 from .gemini_retry import call_with_retry
+from .gemini_telemetry import instrument
+from . import scene_graph
+from .scene_render_2d import render_svg as render_scene_graph_svg
+from .gemini_floorplan_artwork import generate_artwork, room_style
+from . import product_attributes
+from . import product_dimensions
+from . import gemini_scene_refine
 from .gemini_svg_experiment import _extract_svg, generate_svg_text
 from .product_icon_svg import generate_product_icon_svg
 from .topdown_experiment.run import analyze_room
@@ -77,7 +84,7 @@ def _client() -> genai.Client:
     api_key = os.getenv("GEMINI_API_KEY", "").strip()
     if not api_key:
         raise RuntimeError("프로젝트 .env에 GEMINI_API_KEY가 없습니다.")
-    return genai.Client(
+    return instrument(genai.Client(
         api_key=api_key,
         http_options=types.HttpOptions(
             # SDK 기본값은 "재시도 안 함"이라 503/429 한 번에 바로 실패한다.
@@ -86,7 +93,7 @@ def _client() -> genai.Client:
             client_args={"trust_env": False},
             async_client_args={"trust_env": False},
         ),
-    )
+    ))
 
 
 def enrich_products_with_visual_profiles(
@@ -102,12 +109,16 @@ def enrich_products_with_visual_profiles(
     local_cache_dir = cache_root / "product_visuals_local_v3"
     # Bump the cache whenever the photo-to-icon contract changes.  Reusing
     # v2 here would keep serving the old generic/incorrectly colored icons.
-    direct_svg_cache_dir = cache_root / "product_icon_svg_v4"
+    direct_svg_cache_dir = cache_root / "product_icon_svg_v5"
     gemini_cache_dir.mkdir(parents=True, exist_ok=True)
     local_cache_dir.mkdir(parents=True, exist_ok=True)
     direct_svg_cache_dir.mkdir(parents=True, exist_ok=True)
-    direct_svg_error_dir = cache_root / "product_icon_errors_v4"
+    direct_svg_error_dir = cache_root / "product_icon_errors_v5"
     direct_svg_error_dir.mkdir(parents=True, exist_ok=True)
+    # 3D 형태 속성(항목 5). 아이콘용 visual_profile과 형식이 달라 따로 캐시한다
+    attributes_cache_dir = cache_root / "product_attributes_gemini_v1"
+    attributes_cache_dir.mkdir(parents=True, exist_ok=True)
+    attributes_enabled = os.getenv("PRODUCT_ATTRIBUTES_GEMINI", "1").strip().lower() not in {"0", "false", "no", "off"}
     gemini_client: genai.Client | None = None
     gemini_unavailable = False
 
@@ -126,6 +137,12 @@ def enrich_products_with_visual_profiles(
         local_cache_path = local_cache_dir / f"{cache_key}.json"
         direct_svg_cache_path = direct_svg_cache_dir / f"{cache_key}.svg"
         direct_svg_error_path = direct_svg_error_dir / f"{cache_key}.txt"
+        attributes_path = attributes_cache_dir / f"{cache_key}.json"
+        attributes_failed = attributes_cache_dir / f"{cache_key}.failed"
+        # 실패 기록은 30분만 유효하다. 일시적 오류 한 번으로 그 상품이 영영 기본 형태가
+        # 되지 않게 한다
+        if attributes_failed.exists() and time.time() - attributes_failed.stat().st_mtime > 30 * 60:
+            attributes_failed.unlink(missing_ok=True)
 
         try:
             image_bytes: bytes | None = None
@@ -140,6 +157,11 @@ def enrich_products_with_visual_profiles(
                 or (
                     not gemini_cache_path.exists()
                     and not local_cache_path.exists()
+                )
+                or (
+                    attributes_enabled
+                    and not attributes_path.exists()
+                    and not attributes_failed.exists()
                 )
             )
             if needs_download:
@@ -161,6 +183,15 @@ def enrich_products_with_visual_profiles(
                 )
                 if not mime_type.startswith("image/"):
                     mime_type = "image/jpeg"
+                # 3D 형태 생성(가구별 Gemini 부품)이 상품 사진을 다시 쓰도록 저장한다
+                product_image_dir = cache_root / "product_images_v1"
+                product_image_dir.mkdir(parents=True, exist_ok=True)
+                image_path = product_image_dir / f"{cache_key}.jpg"
+                try:
+                    with Image.open(io.BytesIO(image_bytes)) as decoded:
+                        decoded.convert("RGB").save(image_path, format="JPEG", quality=90)
+                except Exception:
+                    image_path = None
 
             # The attached prototype's direct photo -> SVG route is primary.
             # It costs one Gemini call per newly selected product and is cached.
@@ -259,11 +290,63 @@ def enrich_products_with_visual_profiles(
                 )
             )
 
+            # 사진에서 3D 형태 속성과 (보이면) 치수표를 읽는다. 상품당 1회, 이미지 URL로 캐시
+            attributes = None
+            if attributes_path.exists():
+                attributes = json.loads(attributes_path.read_text(encoding="utf-8"))
+            elif (
+                attributes_enabled
+                and image_bytes
+                and not gemini_unavailable
+                and not attributes_failed.exists()
+            ):
+                try:
+                    if gemini_client is None:
+                        gemini_client = _client()
+                    attributes = product_attributes.extract(
+                        gemini_client,
+                        image_bytes,
+                        mime_type,
+                        title=str(product.get("title") or ""),
+                        kind=str(product.get("type") or ""),
+                        model=(
+                            os.getenv("GEMINI_PRODUCT_ATTRIBUTES_MODEL", "").strip()
+                            or os.getenv("GEMINI_ANALYSIS_MODEL", "").strip()
+                            or DEFAULT_ANALYSIS_MODEL
+                        ),
+                    )
+                    attributes_path.write_text(
+                        json.dumps(attributes, ensure_ascii=False, indent=2),
+                        encoding="utf-8",
+                    )
+                except Exception as exc:
+                    print(f"[product-attributes] 형태 속성 추출 실패, 기본 형태 사용: {exc}")
+                    attributes_failed.write_text(str(exc)[:300], encoding="utf-8")
+            if attributes and attributes.get("dimensions"):
+                product["visual_profile"]["dimensions"] = attributes["dimensions"]
+            if attributes and attributes.get("estimated_dimensions"):
+                product["visual_profile"]["estimated_dimensions"] = attributes["estimated_dimensions"]
+            stored_image = cache_root / "product_images_v1" / f"{cache_key}.jpg"
+            if stored_image.is_file():
+                product["image_file"] = stored_image.name
+            kind = scene_graph.object_type(product.get("type"))
+            product["attributes3d"] = product_attributes.attributes_for(
+                kind,
+                attributes or product["visual_profile"],
+            )
+
         except Exception as exc:
             print(
                 "[product-visual] "
                 f"상품 이미지 분석 실패: {exc}"
             )
+
+    # 실제 가로·세로·높이(항목 6). 제목·페이지·치수표·AI 추정 순. 못 찾으면 None
+    for product in products:
+        try:
+            product["dimensions"] = product_dimensions.resolve(product, cache_root)
+        except Exception as exc:
+            print(f"[product-dimensions] 치수 추정 실패: {exc}")
 
     return products
 
@@ -1119,6 +1202,25 @@ def _legacy_layout(
     }
 
 
+def _analysis_meta(model: str) -> dict[str, Any]:
+    """분석 결과를 재사용해도 되는지 가리는 설정 묶음."""
+    from .topdown_experiment.run import ANALYSIS_PROMPT
+
+    return {
+        "model": model,
+        "prompt": hashlib.sha256(ANALYSIS_PROMPT.encode("utf-8")).hexdigest()[:16],
+        "image_max": os.getenv("GEMINI_LAYOUT_IMAGE_MAX", "").strip() or "2400",
+        "thinking": os.getenv("GEMINI_LAYOUT_THINKING", "").strip().lower() or "low",
+    }
+
+
+def _read_json(path: Path) -> Any:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
 def _file_digest(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as file:
@@ -1175,6 +1277,9 @@ def _reuse_identical_upload_cache(
             continue
         shutil.copy2(candidate_scene, scene_path)
         shutil.copy2(candidate_svg, svg_path)
+        candidate_meta = output_dir / f"{candidate.stem}_model2_scene.meta.json"
+        if candidate_meta.exists():
+            shutil.copy2(candidate_meta, output_dir / f"{image_path.stem}_model2_scene.meta.json")
         candidate_base_svg = (
             output_dir
             / (
@@ -1436,7 +1541,15 @@ def generate_floorplan_for_web(
         )
 
     client = _client()
-    scene_reused = skip_existing and _is_cache_fresh(scene_path)
+    # 같은 사진이라도 분석 모델·프롬프트·해상도·thinking이 바뀌면 다시 분석한다.
+    # 예전에는 30분 안이면 설정을 바꿔도 이전 분석을 그대로 썼다
+    meta_path = output_dir / f"{stem}_model2_scene.meta.json"
+    analysis_meta = _analysis_meta(layout_model)
+    scene_reused = (
+        skip_existing
+        and _is_cache_fresh(scene_path)
+        and _read_json(meta_path) == analysis_meta
+    )
     if scene_reused:
         scene = json.loads(scene_path.read_text(encoding="utf-8"))
     else:
@@ -1450,6 +1563,22 @@ def generate_floorplan_for_web(
         scene_path.write_text(
             json.dumps(scene, ensure_ascii=False, indent=2),
             encoding="utf-8",
+        )
+        meta_path.write_text(json.dumps(analysis_meta), encoding="utf-8")
+
+    if _floorplan_renderer() == "scene_graph":
+        return _finish_with_scene_graph(
+            scene,
+            client=client,
+            image_path=image_path,
+            output_dir=output_dir,
+            svg_model=svg_model,
+            layout_path=layout_path,
+            svg_path=svg_path,
+            base_svg_path=base_svg_path,
+            room_width=room_width,
+            room_depth=room_depth,
+            layout_model=layout_model,
         )
 
     if room_width and room_depth:
@@ -1525,6 +1654,160 @@ def generate_floorplan_for_web(
         # 어느 모델이 만든 결과인지 남긴다. 503/품질 문제를 추적할 때 필요하다.
         "layout_model": layout_model,
         "svg_model": svg_model,
+    }
+
+
+def _floorplan_renderer() -> str:
+    """2D 평면도를 누가 그릴지.
+
+    scene_graph(기본): Scene Graph를 그대로 그린다. 3D와 좌표가 같고 Gemini
+        호출이 평면도 1장당 1회(배치 분석)로 줄어든다.
+    gemini: 기존 방식. Gemini가 SVG를 새로 그린다. 개선 전후 비교 실험용으로 남긴다.
+    """
+    value = os.getenv("FLOORPLAN_2D_RENDERER", "scene_graph").strip().lower()
+    return value if value in {"scene_graph", "gemini"} else "scene_graph"
+
+
+# 평면도 화면에서 고를 수 있는 가구. 문·창·벽걸이·잡동사니는 뺀다.
+SELECTABLE_TYPES = SELECTABLE_CATEGORIES | {
+    "sofa",
+    "wardrobe",
+    "bench",
+    "desk_chair",
+    "vanity",
+    "tv",
+}
+
+
+def _artwork_mode() -> str:
+    """가구 그림을 누가 그릴지. gemini(기본) | local(코드의 기본 모양)."""
+    value = os.getenv("FLOORPLAN_2D_ARTWORK", "gemini").strip().lower()
+    return value if value in {"gemini", "local"} else "gemini"
+
+
+def load_artwork(layout: dict[str, Any], base_dir: str | Path) -> dict[str, Any] | None:
+    name = str(layout.get("artwork_file") or "")
+    if not name:
+        return None
+    path = Path(base_dir) / Path(name).name
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def apply_artwork_heights(graph: dict[str, Any], artwork: dict[str, Any]) -> None:
+    """그림을 그린 Gemini가 가구 이름·사진으로 판단한 높이(data-height-m)를 쓴다.
+
+    공간 분석은 방 전체를 한 번에 보느라 높이를 빠뜨리거나(러그) 틀린다. 그림 요청은
+    가구 하나하나를 이름과 함께 보므로 그 값을 우선한다. 같은 호출이라 비용은 그대로다.
+    """
+    drawn = artwork.get("objects") or {}
+    for obj in graph.get("objects") or []:
+        height = (drawn.get(str(obj.get("id"))) or {}).get("height_m")
+        if height:
+            obj["h_m"] = float(height)
+            obj["h_source"] = "svg"
+
+
+def render_floorplan_svg(layout: dict[str, Any], base_dir: str | Path) -> str:
+    """Scene Graph + (있으면) Gemini 가구 그림 → 평면도 SVG. 편집 저장 후 재렌더에도 쓴다."""
+    return render_scene_graph_svg(layout, artwork=load_artwork(layout, base_dir))
+
+
+def _finish_with_scene_graph(
+    scene: dict[str, Any],
+    *,
+    client: genai.Client,
+    image_path: Path,
+    output_dir: Path,
+    svg_model: str,
+    layout_path: Path,
+    svg_path: Path,
+    base_svg_path: Path,
+    room_width: float | None,
+    room_depth: float | None,
+    layout_model: str,
+) -> dict[str, Any]:
+    # 분석 결과는 캐시에서 다시 쓸 수 있지만, 그래프와 SVG는 매번 새로 만든다.
+    # 로컬 계산이라 비용이 거의 없고, 방 치수 입력이 바뀌어도 바로 반영된다.
+    graph = scene_graph.from_analysis(
+        scene,
+        width_m=room_width,
+        depth_m=room_depth,
+    )
+    artwork = None
+    if _artwork_mode() == "gemini":
+        # 가구 겉모양만 Gemini가 그린다. 위치·크기·회전은 그래프 값으로 고정된다.
+        # 캐시 키에 위치가 없어서 같은 사진이면 다시 부르지 않는다.
+        artwork = generate_artwork(
+            client,
+            image_path,
+            graph,
+            model=svg_model,
+            cache_dir=output_dir / "gemini_floorplan_artwork_v1",
+        )
+        if artwork:
+            artwork_path = output_dir / f"{image_path.stem}_model2_artwork.json"
+            artwork_path.write_text(
+                json.dumps(artwork, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            graph["artwork_file"] = artwork_path.name
+            # 3D 바닥·벽도 2D 그림과 같은 색·무늬로 칠하도록 방 정보에 남긴다.
+            # 방 정보는 편집·상품 추가로 만든 배치에도 그대로 따라간다
+            graph["room"]["art_style"] = room_style(artwork)
+            apply_artwork_heights(graph, artwork)
+    if gemini_scene_refine.enabled():
+        # 그림까지 그린 뒤 방 실측과 가구 이름으로 크기·높이·배치를 한 번 더 판단하게 한다
+        # (평면도당 1회, 같은 입력이면 캐시). 고친 뒤 충돌·벽·동선은 보정기가 다시 맞춘다
+        changes = gemini_scene_refine.refine(
+            client,
+            graph,
+            model=os.getenv("GEMINI_SCENE_REFINE_MODEL", "").strip() or layout_model,
+            cache_dir=output_dir / "gemini_scene_refine_v1",
+        )
+        if changes:
+            from .placement_solver import solve as solve_placement
+
+            scene_graph._place_wall_mounted(graph)
+            solve_placement(graph)
+            for obj in graph["objects"]:
+                obj["edit_origin"] = scene_graph._origin(obj)
+            graph = scene_graph.sync_legacy(graph)
+    layout_path.write_text(
+        json.dumps(graph, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    svg_markup = render_scene_graph_svg(graph, artwork=artwork)
+    svg_path.write_text(svg_markup, encoding="utf-8")
+    base_svg_path.write_text(svg_markup, encoding="utf-8")
+
+    furniture_objects = []
+    for index, obj in enumerate(graph["objects"]):
+        if (
+            obj.get("category") not in SELECTABLE_CATEGORIES
+            and obj.get("type") not in SELECTABLE_TYPES
+        ):
+            continue
+        furniture_objects.append(
+            {
+                "source_index": index,
+                "type": str(obj.get("type") or "unknown"),
+                "label": str(obj.get("label") or obj.get("type") or "가구"),
+            }
+        )
+    return {
+        "svg_path": str(svg_path),
+        "layout_file": str(layout_path),
+        "svg_markup": svg_markup,
+        "objects": furniture_objects,
+        "provider": "model2_gemini_svg",
+        "renderer": "scene_graph",
+        "layout_model": layout_model,
+        "svg_model": svg_model if artwork else None,
+        "artwork": bool(artwork),
+        "room": graph["room"],
     }
 
 
@@ -3372,12 +3655,35 @@ def prepare_floorplan_edit_markup(
                 "data-resizable": "true",
                 "data-original-furniture": "true",
                 "data-scene-id": scene_id,
+                # 라벨이 가구와 같이 움직이도록 floorplan_drag.js에 알려 준다.
+                # 라벨에 data-base-x/y가 있어야 하므로 없으면 연결하지 않는다.
+                **(
+                    {"data-label-id": f"label-{scene_id}"}
+                    if any(
+                        element.get("id") == f"label-{scene_id}"
+                        and element.get("data-base-x") is not None
+                        for element in root.iter()
+                    )
+                    else {}
+                ),
                 "data-tx": f"{center_x:.3f}",
                 "data-ty": f"{center_y:.3f}",
                 "data-origin-x": f"{center_x:.3f}",
                 "data-origin-y": f"{center_y:.3f}",
                 "data-angle": "0",
                 "data-scale": "1",
+                # 편집기가 보내는 배율·각도는 이 감싸개를 만든 시점 기준 누적값이다.
+                # 그 시점의 미터 값을 SVG에 같이 적어 둬야, 나중에 그래프가
+                # 다시 그려져도 저장할 때 기준이 어긋나지 않는다.
+                **(
+                    {
+                        "data-origin-w-m": f"{float(obj['w_m']):.4f}",
+                        "data-origin-d-m": f"{float(obj['d_m']):.4f}",
+                        "data-origin-rotation": f"{float(obj['rotation_deg']):.3f}",
+                    }
+                    if all(k in obj for k in ("w_m", "d_m", "rotation_deg"))
+                    else {}
+                ),
             },
         )
         original_transform = str(source_group.get("transform") or "").strip()
@@ -3487,6 +3793,12 @@ def apply_floorplan_edits_to_layout(
     """Persist edited centers and footprints for later product placement."""
     root = ET.fromstring(svg_markup)
     floor_x, floor_y, floor_width, floor_height = _floor_box(root)
+    if scene_graph.is_scene_graph(layout):
+        return _apply_edits_to_scene_graph(
+            root,
+            layout,
+            (floor_x, floor_y, floor_width, floor_height),
+        )
     edited = json.loads(json.dumps(layout))
     by_scene_id = {
         str(obj.get("scene_id") or ""): obj
@@ -3527,3 +3839,58 @@ def apply_floorplan_edits_to_layout(
         obj["user_rotation"] = angle
         obj["user_scale"] = scale
     return edited
+
+
+def _apply_edits_to_scene_graph(
+    root: ET.Element,
+    layout: dict[str, Any],
+    floor_box: tuple[float, float, float, float],
+) -> dict[str, Any]:
+    """편집기의 이동·배율·회전을 Scene Graph의 미터 값으로 옮긴다.
+
+    편집기가 보내는 배율·각도는 처음 그린 상태 기준 누적값이다. 기존 경로는
+    이미 편집된 크기에 다시 곱해서 저장할 때마다 배율이 겹쳤다. 여기서는
+    edit_origin(처음 상태)에 한 번만 적용한다.
+    """
+    graph = scene_graph.ensure(layout)
+    changed = []
+    for element in root.iter():
+        if element.get("data-original-furniture") != "true":
+            continue
+        try:
+            center = (
+                float(element.get("data-tx") or 0),
+                float(element.get("data-ty") or 0),
+            )
+            scale = min(1.8, max(0.5, float(element.get("data-scale") or 1)))
+            angle = float(element.get("data-angle") or 0) % 360
+        except (TypeError, ValueError):
+            continue
+        scene_id = str(element.get("data-scene-id") or "")
+        origin = None
+        try:
+            if element.get("data-origin-w-m") is not None:
+                origin = {
+                    "w_m": float(element.get("data-origin-w-m")),
+                    "d_m": float(element.get("data-origin-d-m")),
+                    "rotation_deg": float(element.get("data-origin-rotation")),
+                }
+        except (TypeError, ValueError):
+            origin = None
+        if scene_graph.apply_svg_edit(
+            graph,
+            scene_id,
+            center_px=center,
+            floor_box=floor_box,
+            scale=scale,
+            angle=angle,
+            origin=origin,
+        ):
+            changed.append(scene_id)
+    # 사용자가 옮긴 가구는 고정하고, 그 가구와 겹치게 된 다른 가구만 비켜 준다.
+    # 동선 보정은 하지 않는다. 사용자가 보지 않은 가구까지 크게 움직이면 혼란스럽다.
+    from .placement_solver import solve as solve_placement
+
+    solve_placement(graph, locked_ids=changed, walkway=False)
+    scene_graph.append_history(graph, "user", "svg_edit", objects=changed)
+    return scene_graph.sync_legacy(graph)

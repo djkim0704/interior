@@ -33,9 +33,21 @@
     return (bytes / (1024 * 1024)).toFixed(1) + "MB";
   }
 
-  function updateNextButton() {
-    nextBtn.disabled = !selectedFile;
+  // 방 가로·세로는 축척의 기준이라 둘 다 있어야 다음으로 넘어간다
+  const sizeInputs = ["roomWidth", "roomDepth"].map((id) => document.getElementById(id));
+
+  function roomSizeValid() {
+    return sizeInputs.every((input) => {
+      const value = Number(input && input.value);
+      return input && input.value.trim() !== "" && value >= 0.5 && value <= 30;
+    });
   }
+
+  function updateNextButton() {
+    nextBtn.disabled = !selectedFile || !roomSizeValid();
+  }
+
+  sizeInputs.forEach((input) => input && input.addEventListener("input", updateNextButton));
 
   function handleFile(file) {
     clearError();
@@ -108,6 +120,10 @@
       showError("방 사진을 선택해 주세요.");
       return;
     }
+    if (!roomSizeValid()) {
+      showError("방의 가로·세로를 m 단위로 입력해 주세요(0.5~30).");
+      return;
+    }
 
     nextBtn.disabled = true;
     nextBtn.textContent = "업로드 중...";
@@ -116,6 +132,16 @@
       const formData = new FormData();
 
       formData.append("photo", selectedFile);
+      // 가로·세로는 필수, 천장은 선택(비어 있으면 사진에서 추정)
+      [
+        ["room_width", "roomWidth"],
+        ["room_depth", "roomDepth"],
+        ["ceiling_height", "ceilingHeight"],
+      ].forEach(([name, id]) => {
+        const input = document.getElementById(id);
+        const value = input ? input.value.trim() : "";
+        if (value) formData.append(name, value);
+      });
 
       const response = await fetch(uploadUrl, {
         method: "POST",

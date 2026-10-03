@@ -14,6 +14,7 @@ import json
 
 import numpy as np
 
+from .config import resolve_library_image
 from .config import (
     DATA_DIR,
     MOOD_IDS_PATH,
@@ -133,8 +134,9 @@ def _dedupe_image_results(results: list[dict], top_k: int) -> list[dict]:
     seen_hashes: set[str] = set()
     unique: list[dict] = []
     for item in results:
-        img_path = MOOD_LIBRARY_DIR / item["path"]
-        if not img_path.exists():
+        # 사진 사본이 없으면 원본(images/final)에서 찾는다. 없는 사진만 뺀다
+        img_path = resolve_library_image(item["path"])
+        if img_path is None:
             continue
         digest = _path_content_hash(img_path)
         if digest in seen_hashes:

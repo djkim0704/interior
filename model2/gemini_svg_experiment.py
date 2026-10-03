@@ -21,6 +21,13 @@ from google import genai
 from google.genai import types
 from PIL import Image
 
+try:
+    from .gemini_telemetry import instrument
+except ImportError:
+    # 파일을 직접 실행할 때도 동작하도록 하는 호환 경로
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from model2.gemini_telemetry import instrument
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "model2" / "output" / "gemini_svg_experiment"
@@ -84,13 +91,13 @@ def _client() -> genai.Client:
     api_key = os.getenv("GEMINI_API_KEY", "").strip()
     if not api_key:
         raise RuntimeError("프로젝트 .env에 GEMINI_API_KEY가 없습니다.")
-    return genai.Client(
+    return instrument(genai.Client(
         api_key=api_key,
         http_options=types.HttpOptions(
             client_args={"trust_env": False},
             async_client_args={"trust_env": False},
         ),
-    )
+    ))
 
 
 def _extract_svg(raw: str) -> str:
@@ -180,6 +187,39 @@ def _ensure_not_truncated(response: object) -> None:
         )
 
 
+def default_thinking(model: str) -> types.ThinkingConfig | None:
+    """그림·속성·재분석 요청의 추론 단계. 기본 medium, GEMINI_THINKING_LEVEL로 바꾼다.
+
+    예전에는 최소(MINIMAL)로 보냈지만 MINIMAL을 거절하는 모델이 있고(재시도로 한 번 낭비),
+    3D 높이·모양까지 함께 판단하게 되면서 추론이 품질에 도움이 된다. 추론 토큰이 출력 한도를
+    같이 쓰므로 호출부의 max_output_tokens를 넉넉히 둔다.
+    """
+    level = os.getenv("GEMINI_THINKING_LEVEL", "medium").strip().lower() or "medium"
+    if level in {"off", "minimal"}:
+        return minimal_thinking(model)
+    if "pro" in str(model).lower():
+        return None
+    if str(model).lower().startswith("gemini-3"):
+        mapping = {"low": types.ThinkingLevel.LOW, "medium": types.ThinkingLevel.MEDIUM, "high": types.ThinkingLevel.HIGH}
+        return types.ThinkingConfig(thinking_level=mapping.get(level, types.ThinkingLevel.MEDIUM))
+    return types.ThinkingConfig(thinking_budget={"low": 1024, "medium": 4096, "high": 8192}.get(level, 4096))
+
+
+def minimal_thinking(model: str) -> types.ThinkingConfig | None:
+    """thinking을 최소로 줄이는 설정. 모델 세대마다 받는 옵션이 다르다.
+
+    Gemini 3 계열은 thinking_budget=0을 400 INVALID_ARGUMENT로 거절하고
+    thinking_level만 받는다. 2.5 이하는 thinking_budget=0으로 끈다.
+    pro 계열은 thinking을 끄거나 최소로 줄이는 값을 거절할 수 있어 아무것도 보내지
+    않는다(None이면 모델 기본값). 대신 호출부의 출력 한도를 넉넉히 둬야 한다.
+    """
+    if "pro" in str(model).lower():
+        return None
+    if str(model).lower().startswith("gemini-3"):
+        return types.ThinkingConfig(thinking_level=types.ThinkingLevel.MINIMAL)
+    return types.ThinkingConfig(thinking_budget=0)
+
+
 def generate_svg_text(
     client: genai.Client,
     image_path: Path,
@@ -202,7 +242,7 @@ def generate_svg_text(
             max_output_tokens=20000,
             # thinking 토큰이 max_output_tokens를 함께 쓰므로 SVG가 잘릴 수 있다.
             # 배치 JSON이 이미 주어진 상태의 변환 작업이라 thinking을 끈다.
-            thinking_config=types.ThinkingConfig(thinking_budget=0),
+            thinking_config=minimal_thinking(model),
         ),
     )
     if not response.text:

@@ -139,6 +139,9 @@ def call_with_retry(
     operation: Callable[..., T],
     *args: Any,
     description: str = "Gemini 요청",
+    retry_attempts: int | None = None,
+    retry_base_delay: float | None = None,
+    retry_max_total_wait: float | None = None,
     **kwargs: Any,
 ) -> T:
     """operation을 호출하고, 일시적 오류면 지수 백오프로 다시 시도한다.
@@ -146,11 +149,23 @@ def call_with_retry(
     재시도 횟수와 첫 대기 시간은 .env의 GEMINI_RETRY_ATTEMPTS,
     GEMINI_RETRY_BASE_DELAY로 조절할 수 있다.
     """
-    attempts = _env_int("GEMINI_RETRY_ATTEMPTS", DEFAULT_ATTEMPTS)
-    base_delay = _env_float("GEMINI_RETRY_BASE_DELAY", DEFAULT_BASE_DELAY)
-    max_total_wait = _env_float(
-        "GEMINI_RETRY_MAX_TOTAL_WAIT",
-        DEFAULT_MAX_TOTAL_WAIT,
+    attempts = (
+        max(1, int(retry_attempts))
+        if retry_attempts is not None
+        else _env_int("GEMINI_RETRY_ATTEMPTS", DEFAULT_ATTEMPTS)
+    )
+    base_delay = (
+        max(0.1, float(retry_base_delay))
+        if retry_base_delay is not None
+        else _env_float("GEMINI_RETRY_BASE_DELAY", DEFAULT_BASE_DELAY)
+    )
+    max_total_wait = (
+        max(0.1, float(retry_max_total_wait))
+        if retry_max_total_wait is not None
+        else _env_float(
+            "GEMINI_RETRY_MAX_TOTAL_WAIT",
+            DEFAULT_MAX_TOTAL_WAIT,
+        )
     )
     waited = 0.0
 

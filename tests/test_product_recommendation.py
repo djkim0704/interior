@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
+from unittest.mock import MagicMock, patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from backend.product_recommendation import (  # noqa: E402
+    SerpApiShoppingProvider,
     _merge_and_validate_mood_analysis,
     analyze_mood_context,
     calculate_text_style_score,
@@ -85,6 +88,49 @@ class FailingImageSimilarity:
 
 
 class RecommendationTests(unittest.TestCase):
+    def test_serpapi_disk_cache_survives_provider_recreation(self) -> None:
+        response = MagicMock()
+        response.status_code = 200
+        response.json.return_value = {
+            "shopping_results": [
+                {
+                    "product_id": "cached-1",
+                    "title": "캐시 소파",
+                    "link": "https://example.com/cached-1",
+                    "thumbnail": "https://example.com/cached-1.jpg",
+                    "extracted_price": 120000,
+                    "source": "테스트몰",
+                }
+            ]
+        }
+
+        with tempfile.TemporaryDirectory() as cache_dir:
+            with patch(
+                "backend.product_recommendation.requests.Session"
+            ) as session_factory:
+                http = session_factory.return_value.__enter__.return_value
+                http.get.return_value = response
+
+                first_provider = SerpApiShoppingProvider(
+                    "test-key",
+                    retries=0,
+                    cache_dir=cache_dir,
+                    cache_ttl_seconds=3600,
+                )
+                first = first_provider.search("패브릭 소파", display=5)
+
+                second_provider = SerpApiShoppingProvider(
+                    "test-key",
+                    retries=0,
+                    cache_dir=cache_dir,
+                    cache_ttl_seconds=3600,
+                )
+                second = second_provider.search("패브릭 소파", display=5)
+
+        self.assertEqual(first, second)
+        self.assertEqual(first[0]["productId"], "cached-1")
+        self.assertEqual(http.get.call_count, 1)
+
     def test_top_three_moods_sum_to_one(self) -> None:
         result = analyze_mood_context(
             "따뜻하고 아늑한 원목 베이지 방",
