@@ -1,6 +1,7 @@
 # PR과 main 푸시마다 Docker 이미지를 빌드하고 그 안에서 테스트를 돌린다.
 # 로컬(macOS/Windows)과 CI(Linux)의 환경 차이를 이미지 하나로 없애기 위해 Docker 안에서 실행한다.
 # 테스트는 실제 API를 부르지 않으므로(AGENTS.md 8) 키를 넣지 않는다.
+# main에서 테스트를 통과하면 그 이미지를 GHCR에 올린다(CD 1단계). 서버 배포는 아직 없다.
 name: CI
 
 on:
@@ -12,10 +13,11 @@ on:
 permissions:
   contents: read
 
-# 같은 브랜치에 새 커밋이 올라오면 이전 실행은 의미가 없으므로 취소한다
+# 같은 브랜치에 새 커밋이 올라오면 이전 실행은 의미가 없으므로 취소한다.
+# main은 취소하지 않는다. 업로드 도중 끊기면 커밋별 이미지가 빠지기 때문이다
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   test:
@@ -39,3 +41,43 @@ jobs:
 
       - name: Run tests
         run: docker run --rm -w /app interior:ci python -m pytest tests/ -q
+
+  # 검사를 통과한 main만 이미지 저장소(GHCR)에 올린다. PR에서는 돌지 않는다.
+  # test와 같은 Dockerfile·같은 빌드 캐시를 쓰므로 층을 다시 설치하지 않고 그대로 가져온다
+  publish:
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      # GITHUB_TOKEN은 실행마다 GitHub가 발급하는 임시 토큰이라 따로 비밀값을 만들 필요가 없다
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # 커밋별 태그(sha-xxxxxxx)는 되돌릴 때 쓰고, latest는 항상 최신 main을 가리킨다
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=sha
+            type=raw,value=latest
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
