@@ -1,0 +1,41 @@
+# PR과 main 푸시마다 Docker 이미지를 빌드하고 그 안에서 테스트를 돌린다.
+# 로컬(macOS/Windows)과 CI(Linux)의 환경 차이를 이미지 하나로 없애기 위해 Docker 안에서 실행한다.
+# 테스트는 실제 API를 부르지 않으므로(AGENTS.md 8) 키를 넣지 않는다.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# 같은 브랜치에 새 커밋이 올라오면 이전 실행은 의미가 없으므로 취소한다
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      # torch 설치 층이 무거워 GitHub Actions 캐시에 빌드 층을 저장한다.
+      # requirements.txt가 그대로면 다음 실행부터 설치 단계를 건너뛴다
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: interior:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Run tests
+        run: docker run --rm -w /app interior:ci python -m pytest tests/ -q

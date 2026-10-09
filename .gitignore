@@ -10,6 +10,10 @@ venv-win/
 local_backup/
 model2/output/
 
+# OS가 폴더마다 만드는 메타데이터 파일
+.DS_Store
+Thumbs.db
+
 # 로컬 Python 설치·의존성 산출물
 /python-*.exe
 /python-install*.log
