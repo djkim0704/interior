@@ -1815,6 +1815,32 @@ def _svg_tag(name: str) -> str:
     return f"{{{SVG_NS}}}{name}"
 
 
+FILTER_REF = re.compile(r"url\(#([^)]+)\)")
+
+
+def _drop_missing_filters(root: ET.Element) -> None:
+    """정의되지 않은 필터를 가리키는 filter 속성을 고친다.
+
+    브라우저는 없는 필터를 참조한 요소를 아예 그리지 않는다. 상품 그림은 예전 Gemini
+    평면도의 shadow-med·shadow-sm을 쓰는데, 지금 기본 렌더러(scene_graph)의 SVG에는
+    sg-shadow만 있어 추가한 상품과 라벨이 2D에서만 사라졌다(3D는 이 SVG를 쓰지 않는다).
+    """
+    defined = {
+        element.get("id")
+        for element in root.iter(_svg_tag("filter"))
+        if element.get("id")
+    }
+    fallback = "sg-shadow" if "sg-shadow" in defined else None
+    for element in root.iter():
+        match = FILTER_REF.fullmatch(str(element.get("filter") or "").strip())
+        if not match or match.group(1) in defined:
+            continue
+        if fallback:
+            element.set("filter", f"url(#{fallback})")
+        else:
+            element.attrib.pop("filter", None)
+
+
 def _remove_element(root: ET.Element, target: ET.Element) -> None:
     for parent in root.iter():
         if target in list(parent):
@@ -3585,6 +3611,7 @@ def create_modified_svg(
             owner_id=label["owner_id"],
         )
 
+    _drop_missing_filters(root)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     tree.write(output_path, encoding="utf-8", xml_declaration=True)
     return str(output_path)
